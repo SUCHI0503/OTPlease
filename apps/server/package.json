@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --env-file=.env src/index.ts"
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "tsx": "^4.23.13"
+    "tsx": "^4.23.13",
+    "vitest": "^5.0.1"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
