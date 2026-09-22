@@ -5,15 +5,19 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=.env src/index.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/node": "^26.4.1",
     "tsx": "^4.23.13",
     "vitest": "^5.0.1"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
     "fastify": "^5.12.5",
-    "prisma": "^6.19.3"
+    "libphonenumber-js": "^1.13.13",
+    "prisma": "^6.19.3",
+    "zod": "^4.6.5"
   }
 }

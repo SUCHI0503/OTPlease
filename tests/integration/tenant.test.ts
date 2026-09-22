@@ -1,11 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { buildApp } from "./app";
-import { prisma } from "./lib/prisma";
+import { buildApp } from "../../apps/server/src/app";
+import { prisma } from "../../apps/server/src/lib/prisma";
 
 const app = buildApp({ logger: false });
 
 beforeAll(async () => {
-  // Safety: never run (and delete data) against the dev database
   if (!process.env.DATABASE_URL?.includes("otplease_test")) {
     throw new Error("Refusing to run: DATABASE_URL is not the test database");
   }

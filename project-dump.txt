@@ -1,0 +1,533 @@
+===== FOLDER STRUCTURE =====
+apps/server/.env
+apps/server/.env.test
+apps/server/package.json
+apps/server/prisma/migrations/20260918214102_init/migration.sql
+apps/server/prisma/migrations/migration_lock.toml
+apps/server/prisma/schema.prisma
+apps/server/src/app.ts
+apps/server/src/index.ts
+apps/server/src/lib/env.ts
+apps/server/src/lib/errors.ts
+apps/server/src/lib/phone.ts
+apps/server/src/lib/prisma.ts
+apps/server/src/lib/schemas.ts
+apps/server/src/lib/tenant.ts
+apps/server/tsconfig.json
+apps/server/vitest.config.ts
+packages/eslint-config/README.md
+packages/eslint-config/base.js
+packages/eslint-config/next.js
+packages/eslint-config/package.json
+packages/eslint-config/react-internal.js
+packages/typescript-config/base.json
+packages/typescript-config/nextjs.json
+packages/typescript-config/package.json
+packages/typescript-config/react-library.json
+packages/ui/eslint.config.mjs
+packages/ui/package.json
+packages/ui/src/button.tsx
+packages/ui/src/card.tsx
+packages/ui/src/code.tsx
+packages/ui/tsconfig.json
+tests/integration/tenant.test.ts
+tests/integration/validation.test.ts
+tests/unit/lib/phone.test.ts
+
+===== docker-compose.yml =====
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: otplease
+      POSTGRES_PASSWORD: otplease
+      POSTGRES_DB: otplease
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+
+===== apps/server/package.json =====
+{
+  "name": "server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "tsx": "^4.23.13",
+    "vitest": "^5.0.1"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "fastify": "^5.12.5",
+    "libphonenumber-js": "^1.13.13",
+    "prisma": "^6.19.3",
+    "zod": "^4.6.5"
+  }
+}
+
+===== apps/server/tsconfig.json =====
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src", "vitest.config.ts"]
+}
+
+===== apps/server/vitest.config.ts =====
+import { defineConfig } from "vitest/config";
+import { loadEnv } from "vite";
+
+export default defineConfig({
+  test: {
+    env: loadEnv("test", process.cwd(), ""),
+    fileParallelism: false,
+    include: ["../../tests/**/*.test.ts"],
+  },
+});
+
+===== apps/server/prisma/schema.prisma =====
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Application {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  users     User[]
+}
+
+model User {
+  id            String      @id @default(uuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id])
+  phone         String
+  createdAt     DateTime    @default(now())
+
+  @@unique([applicationId, phone])
+}
+
+===== apps/server/src/index.ts =====
+import { env } from "./lib/env";
+import { buildApp } from "./app";
+
+const app = buildApp();
+app.listen({ port: env.PORT, host: "0.0.0.0" });
+
+===== apps/server/src/app.ts =====
+import Fastify from "fastify";
+import { Prisma } from "@prisma/client";
+import { prisma } from "./lib/prisma";
+import { tenantUsers } from "./lib/tenant";
+import { registerErrorHandler, sendError } from "./lib/errors";
+import {
+  applicationParamsSchema,
+  createApplicationSchema,
+  createUserSchema,
+  userParamsSchema,
+} from "./lib/schemas";
+
+export function buildApp(options: { logger?: boolean } = {}) {
+  const app = Fastify({ logger: options.logger ?? true });
+
+  registerErrorHandler(app);
+
+  app.addHook("onClose", async () => {
+    await prisma.$disconnect();
+  });
+
+  app.get("/health", async () => ({ status: "ok", service: "otplease-server" }));
+
+  // ---------- Applications (tenants) ----------
+  app.post("/applications", async (request, reply) => {
+    const { name } = createApplicationSchema.parse(request.body);
+    const application = await prisma.application.create({ data: { name } });
+    return reply.status(201).send(application);
+  });
+
+  app.get("/applications", async () => {
+    return prisma.application.findMany({ orderBy: { createdAt: "desc" } });
+  });
+
+  // ---------- Users (always inside one application) ----------
+  app.post("/applications/:applicationId/users", async (request, reply) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    const { phone } = createUserSchema.parse(request.body);
+
+    const application = await prisma.application.findUnique({ where: { id: applicationId } });
+    if (!application) {
+      return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
+    }
+
+    try {
+      const user = await tenantUsers(prisma, applicationId).create(phone);
+      return reply.status(201).send(user);
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+        return sendError(
+          reply,
+          409,
+          "USER_ALREADY_EXISTS",
+          "user with this phone already exists in this application"
+        );
+      }
+      throw err;
+    }
+  });
+
+  app.get("/applications/:applicationId/users", async (request) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    return tenantUsers(prisma, applicationId).list();
+  });
+
+  app.get("/applications/:applicationId/users/:userId", async (request, reply) => {
+    const { applicationId, userId } = userParamsSchema.parse(request.params);
+    const user = await tenantUsers(prisma, applicationId).findById(userId);
+    if (!user) {
+      return sendError(reply, 404, "USER_NOT_FOUND", "user not found");
+    }
+    return user;
+  });
+
+  return app;
+}
+
+===== apps/server/src/lib/prisma.ts =====
+import { PrismaClient } from "@prisma/client";
+
+export const prisma = new PrismaClient();
+
+===== apps/server/src/lib/tenant.ts =====
+import type { PrismaClient } from "@prisma/client";
+
+// Every user query goes through here, so applicationId can never be forgotten.
+export function tenantUsers(prisma: PrismaClient, applicationId: string) {
+  return {
+    create: (phone: string) => prisma.user.create({ data: { applicationId, phone } }),
+    list: () => prisma.user.findMany({ where: { applicationId }, orderBy: { createdAt: "desc" } }),
+    findById: (id: string) => prisma.user.findFirst({ where: { id, applicationId } }),
+  };
+}
+
+===== apps/server/src/lib/env.ts =====
+import { z } from "zod";
+
+const envSchema = z.object({
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  PORT: z.coerce.number().int().positive().default(4000),
+  DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+});
+
+const parsed = envSchema.safeParse(process.env);
+
+if (!parsed.success) {
+  console.error("Invalid environment variables:");
+  for (const issue of parsed.error.issues) {
+    console.error(`  - ${issue.path.join(".")}: ${issue.message}`);
+  }
+  process.exit(1);
+}
+
+export const env = parsed.data;
+
+===== apps/server/src/lib/errors.ts =====
+import type { FastifyInstance, FastifyReply } from "fastify";
+import { ZodError } from "zod";
+
+export function sendError(
+  reply: FastifyReply,
+  status: number,
+  code: string,
+  message: string,
+  details?: unknown
+) {
+  return reply.status(status).send({ error: { code, message, ...(details ? { details } : {}) } });
+}
+
+export function registerErrorHandler(app: FastifyInstance) {
+  app.setErrorHandler((error, request, reply) => {
+    // Bad input caught by Zod
+    if (error instanceof ZodError) {
+      const details = error.issues.map((issue) => ({
+        field: issue.path.join("."),
+        message: issue.message,
+      }));
+      return sendError(reply, 400, "VALIDATION_ERROR", "Invalid request", details);
+    }
+
+    // Client mistakes that Fastify detects itself, like malformed JSON
+    const statusCode = (error as { statusCode?: number }).statusCode;
+    if (statusCode && statusCode >= 400 && statusCode < 500) {
+      return sendError(reply, statusCode, "BAD_REQUEST", (error as Error).message);
+    }
+
+    // Our own bugs: log the details, but never show them to the caller
+    request.log.error(error);
+    return sendError(reply, 500, "INTERNAL_ERROR", "Something went wrong");
+  });
+
+  app.setNotFoundHandler((request, reply) =>
+    sendError(reply, 404, "ROUTE_NOT_FOUND", `Route ${request.method} ${request.url} not found`)
+  );
+}
+
+===== apps/server/src/lib/schemas.ts =====
+import { z } from "zod";
+import { normalizePhone } from "./phone";
+
+export const createApplicationSchema = z.object({
+  name: z.string().trim().min(1, "name is required").max(100, "name is too long"),
+});
+
+// Validates the phone AND converts it to the standard +E164 format
+const phoneSchema = z
+  .string({ error: "phone is required" })
+  .trim()
+  .min(1, "phone is required")
+  .transform((value, ctx) => {
+    const normalized = normalizePhone(value);
+    if (!normalized) {
+      ctx.addIssue({ code: "custom", message: "invalid phone number" });
+      return z.NEVER;
+    }
+    return normalized;
+  });
+
+export const createUserSchema = z.object({
+  phone: phoneSchema,
+});
+
+export const applicationParamsSchema = z.object({
+  applicationId: z.string().uuid("applicationId must be a valid id"),
+});
+
+export const userParamsSchema = applicationParamsSchema.extend({
+  userId: z.string().uuid("userId must be a valid id"),
+});
+
+===== apps/server/src/lib/phone.ts =====
+import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
+
+// Returns the number in E.164 format (like +919876543210), or null if it is not valid.
+// defaultCountry is used when the number has no + prefix. Later this becomes a per-application setting.
+export function normalizePhone(input: string, defaultCountry: CountryCode = "IN"): string | null {
+  const parsed = parsePhoneNumberFromString(input.trim(), defaultCountry);
+  if (!parsed || !parsed.isValid()) return null;
+  return parsed.number;
+}
+
+===== tests/unit/lib/phone.test.ts =====
+import { describe, expect, it } from "vitest";
+import { normalizePhone } from "../../../apps/server/src/lib/phone";
+
+describe("normalizePhone", () => {
+  it("formats an international number with spaces", () => {
+    expect(normalizePhone("+91 98765 43210")).toBe("+919876543210");
+  });
+
+  it("adds the default country code to a national number", () => {
+    expect(normalizePhone("9876543210")).toBe("+919876543210");
+  });
+
+  it("keeps an already clean E.164 number", () => {
+    expect(normalizePhone("+12133734253")).toBe("+12133734253");
+  });
+
+  it("rejects a number that is too short", () => {
+    expect(normalizePhone("12345")).toBeNull();
+  });
+
+  it("rejects text that is not a phone number", () => {
+    expect(normalizePhone("hello")).toBeNull();
+  });
+});
+
+===== tests/integration/tenant.test.ts =====
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { buildApp } from "../../apps/server/src/app";
+import { prisma } from "../../apps/server/src/lib/prisma";
+
+const app = buildApp({ logger: false });
+
+beforeAll(async () => {
+  if (!process.env.DATABASE_URL?.includes("otplease_test")) {
+    throw new Error("Refusing to run: DATABASE_URL is not the test database");
+  }
+  await app.ready();
+});
+
+beforeEach(async () => {
+  await prisma.user.deleteMany();
+  await prisma.application.deleteMany();
+});
+
+afterAll(async () => {
+  await app.close();
+});
+
+async function createApplication(name: string) {
+  const res = await app.inject({ method: "POST", url: "/applications", payload: { name } });
+  return res.json() as { id: string };
+}
+
+function createUser(applicationId: string, phone: string) {
+  return app.inject({
+    method: "POST",
+    url: `/applications/${applicationId}/users`,
+    payload: { phone },
+  });
+}
+
+describe("tenant isolation", () => {
+  it("allows the same phone number in two different applications", async () => {
+    const zomato = await createApplication("Zomato");
+    const swiggy = await createApplication("Swiggy");
+
+    expect((await createUser(zomato.id, "+919876543210")).statusCode).toBe(201);
+    expect((await createUser(swiggy.id, "+919876543210")).statusCode).toBe(201);
+  });
+
+  it("rejects a duplicate phone inside the same application", async () => {
+    const zomato = await createApplication("Zomato");
+
+    await createUser(zomato.id, "+919876543210");
+    const second = await createUser(zomato.id, "+919876543210");
+
+    expect(second.statusCode).toBe(409);
+  });
+
+  it("does not let tenant B read tenant A's user by id", async () => {
+    const zomato = await createApplication("Zomato");
+    const swiggy = await createApplication("Swiggy");
+    const zomatoUser = (await createUser(zomato.id, "+919876543210")).json() as { id: string };
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/applications/${swiggy.id}/users/${zomatoUser.id}`,
+    });
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("does not show tenant A's users in tenant B's list", async () => {
+    const zomato = await createApplication("Zomato");
+    const swiggy = await createApplication("Swiggy");
+    await createUser(zomato.id, "+919876543210");
+
+    const res = await app.inject({ method: "GET", url: `/applications/${swiggy.id}/users` });
+
+    expect(res.json()).toEqual([]);
+  });
+});
+
+===== tests/integration/validation.test.ts =====
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { buildApp } from "../../apps/server/src/app";
+import { prisma } from "../../apps/server/src/lib/prisma";
+
+const app = buildApp({ logger: false });
+
+beforeAll(async () => {
+  if (!process.env.DATABASE_URL?.includes("otplease_test")) {
+    throw new Error("Refusing to run: DATABASE_URL is not the test database");
+  }
+  await app.ready();
+});
+
+beforeEach(async () => {
+  await prisma.user.deleteMany();
+  await prisma.application.deleteMany();
+});
+
+afterAll(async () => {
+  await app.close();
+});
+
+async function createApplication(name: string) {
+  const res = await app.inject({ method: "POST", url: "/applications", payload: { name } });
+  return res.json() as { id: string };
+}
+
+function createUser(applicationId: string, phone: unknown) {
+  return app.inject({
+    method: "POST",
+    url: `/applications/${applicationId}/users`,
+    payload: { phone },
+  });
+}
+
+describe("input validation", () => {
+  it("rejects an application without a name", async () => {
+    const res = await app.inject({ method: "POST", url: "/applications", payload: {} });
+
+    expect(res.statusCode).toBe(400);
+    const body = res.json();
+    expect(body.error.code).toBe("VALIDATION_ERROR");
+    expect(body.error.details[0].field).toBe("name");
+  });
+
+  it("rejects an invalid phone number", async () => {
+    const zomato = await createApplication("Zomato");
+
+    const res = await createUser(zomato.id, "12345");
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.details[0].field).toBe("phone");
+  });
+
+  it("rejects a missing phone", async () => {
+    const zomato = await createApplication("Zomato");
+
+    const res = await createUser(zomato.id, undefined);
+
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("treats different formats of one number as the same user", async () => {
+    const zomato = await createApplication("Zomato");
+
+    const first = await createUser(zomato.id, "+91 98765 43210");
+    const second = await createUser(zomato.id, "9876543210");
+
+    expect(first.statusCode).toBe(201);
+    expect(first.json().phone).toBe("+919876543210");
+    expect(second.statusCode).toBe(409);
+  });
+
+  it("rejects an application id that is not a valid id", async () => {
+    const res = await createUser("not-a-uuid", "+919876543210");
+
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("returns 404 for an application that does not exist", async () => {
+    const res = await createUser("00000000-0000-4000-8000-000000000000", "+919876543210");
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe("APPLICATION_NOT_FOUND");
+  });
+});
+
+===== tests/integration/otp-shape.test.ts =====
