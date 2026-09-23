@@ -1,11 +1,25 @@
 import { z } from "zod";
 import { normalizePhone } from "./phone";
+import net from "node:net";
 import { SCOPES } from "./apikeys";
 import { WEBHOOK_EVENTS } from "../queue/webhook-queue";
 
 export const createApplicationSchema = z.object({
   name: z.string().trim().min(1, "name is required").max(100, "name is too long"),
 });
+
+// What the developer's backend forwards about the end user's request (all optional)
+const contextSchema = z
+  .object({
+    ip: z
+      .string()
+      .trim()
+      .refine((v) => net.isIP(v.replace(/%.*$/, "")) !== 0, "ip must be a valid IPv4 or IPv6 address")
+      .optional(),
+    deviceId: z.string().trim().min(8, "deviceId must be at least 8 characters").max(128, "deviceId is too long").optional(),
+    userAgent: z.string().max(500, "userAgent is too long").optional(),
+  })
+  .optional();
 
 // Validates the phone AND converts it to the standard +E164 format
 const phoneSchema = z
@@ -40,6 +54,7 @@ export const otpRequestSchema = z
     // Phone channels to try, in order, if the requested one fails to send
     fallback: z.array(z.enum(["sms", "whatsapp", "voice"])).max(2).default([]),
     email: z.string().trim().toLowerCase().email("invalid email address").optional(),
+    context: contextSchema,
   })
   .refine((v) => v.channel !== "email" || v.email, {
     path: ["email"],
@@ -52,6 +67,7 @@ export const otpVerifySchema = z.object({
     .string({ error: "code is required" })
     .trim()
     .regex(/^\d{6}$/, "code must be 6 digits"),
+  context: contextSchema,
 });
 
 export const refreshSchema = z.object({

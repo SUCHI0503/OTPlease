@@ -10,6 +10,7 @@ import { maskRecipient } from "./lib/mask";
 import { isValidTwilioSignature } from "./providers/twilio";
 import { isAdminToken, issueApiKey, verifyApiKey, type Scope } from "./lib/apikeys";
 import { DOCS_HTML, buildOpenApiDocument } from "./openapi";
+import { computeSignals, recordLogin } from "./lib/intelligence";
 import { getAppAnalytics, getOverview } from "./lib/analytics";
 import { createWebhookEmitter, createWebhookQueue } from "./queue/webhook-queue";
 import { encrypt } from "./lib/secretbox";
@@ -300,6 +301,19 @@ export function buildApp(
     return user;
   });
 
+  app.get("/applications/:applicationId/users/:userId/devices", async (request, reply) => {
+    const { applicationId, userId } = userParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "users:read", applicationId }))) return reply;
+    if (!(await tenantUsers(prisma, applicationId).findById(userId))) {
+      return sendError(reply, 404, "USER_NOT_FOUND", "user not found");
+    }
+    return prisma.device.findMany({
+      where: { applicationId, userId },
+      orderBy: { lastSeenAt: "desc" },
+      select: { id: true, userAgent: true, lastIpMasked: true, firstSeenAt: true, lastSeenAt: true },
+    });
+  });
+
   // ---------- OTP ----------
   const OTP_EXPIRY_MINUTES = 5;
   const OTP_MAX_ATTEMPTS = 5;
@@ -307,7 +321,7 @@ export function buildApp(
   app.post("/applications/:applicationId/otp/request", async (request, reply) => {
     const { applicationId } = applicationParamsSchema.parse(request.params);
     if (!(await authorize(request, reply, { scope: "otp:request", applicationId }))) return reply;
-    const { phone, channel, email, fallback } = otpRequestSchema.parse(request.body);
+    const { phone, channel, email, fallback, context } = otpRequestSchema.parse(request.body);
 
     if (
       await rateLimited(reply, [
@@ -331,6 +345,7 @@ export function buildApp(
 
     const users = tenantUsers(prisma, applicationId);
     const user = await users.findOrCreate(phone);
+    const signals = await computeSignals(prisma, redis, applicationId, user.id, phone, context);
 
     const code = generateOtpCode();
     const codeHash = hashOtpCode(code);
@@ -357,13 +372,13 @@ export function buildApp(
     });
     await enqueueOtp(otpQueue, { deliveryId: delivery.id, chain, to, code });
 
-    return reply.status(202).send({ status: "otp_request_accepted", userId: user.id, deliveryId: delivery.id });
+    return reply.status(202).send({ status: "otp_request_accepted", userId: user.id, deliveryId: delivery.id, signals });
   });
 
   app.post("/applications/:applicationId/otp/verify", async (request, reply) => {
     const { applicationId } = applicationParamsSchema.parse(request.params);
     if (!(await authorize(request, reply, { scope: "otp:verify", applicationId }))) return reply;
-    const { phone, code } = otpVerifySchema.parse(request.body);
+    const { phone, code, context } = otpVerifySchema.parse(request.body);
 
     if (
       await rateLimited(reply, [
@@ -415,9 +430,24 @@ export function buildApp(
       return sendError(reply, 400, "OTP_NOT_FOUND", "no active otp for this user");
     }
 
+    const login = await recordLogin(prisma, applicationId, user.id, context);
     const tokens = await createSession(prisma, applicationId, user.id);
     await emit(applicationId, "otp.verified", { userId: user.id });
-    return reply.status(200).send({ status: "verified", userId: user.id, ...tokens });
+    if (login.isNewDevice) {
+      await emit(applicationId, "device.new", {
+        userId: user.id,
+        deviceId: login.deviceId,
+        isFirstDevice: login.isFirstDevice,
+        ip: login.ipMasked,
+        userAgent: login.userAgent,
+      });
+    }
+    return reply.status(200).send({
+      status: "verified",
+      userId: user.id,
+      ...tokens,
+      device: { id: login.deviceId, isNew: login.isNewDevice, isFirstDevice: login.isFirstDevice, isNewIp: login.isNewIp },
+    });
   });
 
   // ---------- Delivery status ----------

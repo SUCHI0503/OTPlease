@@ -82,20 +82,21 @@ export function buildOpenApiDocument() {
 
   add("post", `${A}/otp/request`, {
     summary: "Request a one-time code",
-    description: "Creates or finds the user, invalidates older codes, and queues the message. Returns immediately (202); a worker sends it. When `channel` is `email`, `email` is required. `fallback` lists phone channels to try, in order, if the first fails. Rate limited (429).",
+    description: "Optionally send `context` ({ ip, deviceId, userAgent }) forwarded from your user's request to get `signals` back: whether the device or IP is new for this user, and how many different phones used them recently. Creates or finds the user, invalidates older codes, and queues the message. Returns immediately (202); a worker sends it. When `channel` is `email`, `email` is required. `fallback` lists phone channels to try, in order, if the first fails. Rate limited (429).",
     tag: "OTP", auth: "key", scope: "otp:request", body: schemaOf(otpRequestSchema),
     ok: { status: "202", response: json({ type: "object", properties: { status: { type: "string" }, userId: { type: "string" }, deliveryId: { type: "string" } } }, "Accepted") },
     extraErrors: { "429": "Rate limited. See the Retry-After header." },
   });
   add("post", `${A}/otp/verify`, {
     summary: "Verify a one-time code and start a session",
-    description: "Codes are single use and expire after 5 minutes. A wrong code counts an attempt; too many attempts return 429. Success returns an access token and a refresh token.",
+    description: "Codes are single use and expire after 5 minutes. A wrong code counts an attempt; too many attempts return 429. Success returns an access token and a refresh token. If `context` is sent, the device and IP are remembered and `device` says whether they were new; a new device also fires the `device.new` webhook.",
     tag: "OTP", auth: "key", scope: "otp:verify", body: schemaOf(otpVerifySchema),
     ok: { status: "200", response: json(ref("Tokens")) },
     extraErrors: { "429": "Too many attempts or rate limited" },
   });
   add("get", `${A}/deliveries/{deliveryId}`, { summary: "Get delivery status", tag: "OTP", auth: "key", scope: "deliveries:read", ok: { status: "200", response: json(ref("Delivery")) }, extraErrors: { "404": "Not found" } });
 
+  add("get", `${A}/users/{userId}/devices`, { summary: "Devices a user has logged in from", description: "Only devices from successful logins appear. Raw device ids and IPs are never stored; the IP is shown masked.", tag: "Users", auth: "key", scope: "users:read", ok: { status: "200", response: json({ type: "array", items: ref("Device") }) }, extraErrors: { "404": "User not found" } });
   add("post", `${A}/users`, { summary: "Create a user", tag: "Users", auth: "key", scope: "users:write", body: schemaOf(createUserSchema), ok: { status: "201", response: json(ref("User"), "Created") }, extraErrors: { "404": "Application not found", "409": "User already exists" } });
   add("get", `${A}/users`, { summary: "List users", tag: "Users", auth: "key", scope: "users:read", ok: { status: "200", response: json({ type: "array", items: ref("User") }) } });
   add("get", `${A}/users/{userId}`, { summary: "Get a user", tag: "Users", auth: "key", scope: "users:read", ok: { status: "200", response: json(ref("User")) }, extraErrors: { "404": "Not found" } });
@@ -144,6 +145,7 @@ export function buildOpenApiDocument() {
     paths,
     webhooks: {
       "otp.verified": { post: { summary: "A user verified a code", requestBody: { content: { "application/json": { schema: eventSchema("otp.verified", { type: "object", properties: { userId: { type: "string" } } }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
+      "device.new": { post: { summary: "A user logged in from a device not seen before", requestBody: { content: { "application/json": { schema: eventSchema("device.new", { type: "object", properties: { userId: { type: "string" }, deviceId: { type: "string" }, isFirstDevice: { type: "boolean", description: "True when this is the user's first known device, so usually not suspicious" }, ip: { type: "string", description: "Masked" }, userAgent: { type: ["string", "null"] } } }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
       "delivery.sent": { post: { summary: "A message was handed to the provider", requestBody: { content: { "application/json": { schema: eventSchema("delivery.sent", { type: "object" }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
       "delivery.delivered": { post: { summary: "The provider confirmed delivery", requestBody: { content: { "application/json": { schema: eventSchema("delivery.delivered", { type: "object" }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
       "delivery.failed": { post: { summary: "Delivery failed on every channel", requestBody: { content: { "application/json": { schema: eventSchema("delivery.failed", { type: "object" }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
@@ -158,6 +160,7 @@ export function buildOpenApiDocument() {
         Error: { type: "object", properties: { error: { type: "object", properties: { code: { type: "string" }, message: { type: "string" }, details: {} }, required: ["code", "message"] } } },
         Application: { type: "object", properties: { id: { type: "string", format: "uuid" }, name: { type: "string" }, createdAt: { type: "string", format: "date-time" } } },
         User: { type: "object", properties: { id: { type: "string", format: "uuid" }, applicationId: { type: "string" }, phone: { type: "string", description: "E.164" }, createdAt: { type: "string", format: "date-time" } } },
+        Device: { type: "object", properties: { id: { type: "string" }, userAgent: { type: ["string", "null"] }, lastIpMasked: { type: ["string", "null"] }, firstSeenAt: { type: "string", format: "date-time" }, lastSeenAt: { type: "string", format: "date-time" } } },
         Tokens: { type: "object", properties: { accessToken: { type: "string" }, refreshToken: { type: "string" }, tokenType: { const: "Bearer" }, expiresIn: { type: "integer", description: "Access token lifetime in seconds" }, userId: { type: "string" } } },
         Delivery: { type: "object", properties: { id: { type: "string" }, requestedChannel: { type: "string" }, channel: { type: ["string", "null"], description: "Channel actually used, after any fallback" }, status: { enum: ["queued", "sent", "delivered", "failed"] }, toMasked: { type: "string" }, attempts: { type: "integer" }, error: { type: ["string", "null"] } } },
         ApiKey: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, prefix: { type: "string" }, scopes: { type: "array", items: { enum: [...SCOPES] } }, createdAt: { type: "string", format: "date-time" }, lastUsedAt: { type: ["string", "null"] }, revokedAt: { type: ["string", "null"] } } },

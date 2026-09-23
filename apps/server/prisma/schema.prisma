@@ -22,6 +22,8 @@ model User {
   createdAt     DateTime    @default(now())
   otpCodes      OtpCode[]
   sessions      Session[]
+  devices       Device[]
+  seenIps       SeenIp[]
 
   @@unique([applicationId, phone])
 }
@@ -114,5 +116,36 @@ model WebhookLog {
   updatedAt      DateTime @updatedAt
 
   @@index([endpointId])
+  @@index([applicationId])
+}
+
+// Only created after a successful verify, so a row means "this user has logged in from here before".
+// Raw device ids and IPs are never stored: only keyed hashes, plus a masked IP for display.
+model Device {
+  id            String   @id @default(uuid())
+  applicationId String
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  deviceHash    String
+  userAgent     String?
+  lastIpMasked  String?
+  firstSeenAt   DateTime @default(now())
+  lastSeenAt    DateTime @default(now())
+
+  @@unique([userId, deviceHash])
+  @@index([applicationId])
+}
+
+model SeenIp {
+  id            String   @id @default(uuid())
+  applicationId String
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  ipHash        String
+  ipMasked      String
+  firstSeenAt   DateTime @default(now())
+  lastSeenAt    DateTime @default(now())
+
+  @@unique([userId, ipHash])
   @@index([applicationId])
 }

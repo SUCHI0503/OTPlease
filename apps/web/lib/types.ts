@@ -17,6 +17,7 @@ export interface Analytics {
     users: number;
     activeApiKeys: number;
     activeWebhooks: number;
+    newDevices: number;
     webhookFailures: number;
   };
   byChannel: { channel: string; requests: number; failed: number }[];
@@ -42,4 +43,4 @@ export interface WebhookRow {
 }
 
 export const SCOPES = ["otp:request", "otp:verify", "users:read", "users:write", "deliveries:read", "analytics:read", "keys:manage", "webhooks:manage"];
-export const WEBHOOK_EVENTS = ["otp.verified", "delivery.sent", "delivery.delivered", "delivery.failed"];
+export const WEBHOOK_EVENTS = ["otp.verified", "device.new", "delivery.sent", "delivery.delivered", "delivery.failed"];

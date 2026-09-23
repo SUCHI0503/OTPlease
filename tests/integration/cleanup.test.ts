@@ -10,6 +10,8 @@ beforeEach(async () => {
     throw new Error("Refusing to run: DATABASE_URL is not the test database");
   }
   await prisma.delivery.deleteMany();
+  await prisma.device.deleteMany();
+  await prisma.seenIp.deleteMany();
   await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();
   await prisma.user.deleteMany();
@@ -49,9 +51,25 @@ describe("cleanup job", () => {
     await prisma.delivery.create({ data: { applicationId: app.id, requestedChannel: "sms", toMasked: "x" } });
 
     const result = await runCleanup(prisma, now);
-    expect(result).toEqual({ otps: 2, sessions: 2, deliveries: 1 });
+    expect(result).toEqual({ otps: 2, sessions: 2, deliveries: 1, devices: 0 });
     expect(await prisma.delivery.count()).toBe(1);
     expect(await prisma.otpCode.count()).toBe(2);
     expect(await prisma.session.count()).toBe(2);
+  });
+
+  it("removes devices and IPs not seen for 180 days, keeps recent ones", async () => {
+    const now = new Date();
+    const app = await prisma.application.create({ data: { name: "D" } });
+    const user = await prisma.user.create({ data: { applicationId: app.id, phone: "+919876543210" } });
+    const old = new Date(now.getTime() - 181 * DAY);
+    await prisma.device.create({ data: { applicationId: app.id, userId: user.id, deviceHash: "old", lastSeenAt: old } });
+    await prisma.device.create({ data: { applicationId: app.id, userId: user.id, deviceHash: "new" } });
+    await prisma.seenIp.create({ data: { applicationId: app.id, userId: user.id, ipHash: "old", ipMasked: "1.2.3.*", lastSeenAt: old } });
+    await prisma.seenIp.create({ data: { applicationId: app.id, userId: user.id, ipHash: "new", ipMasked: "1.2.4.*" } });
+
+    const result = await runCleanup(prisma, now);
+    expect(result.devices).toBe(2);
+    expect(await prisma.device.count()).toBe(1);
+    expect(await prisma.seenIp.count()).toBe(1);
   });
 });

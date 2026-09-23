@@ -16,6 +16,8 @@ beforeEach(async () => {
   await flushTestRedis();
   await prisma.apiKey.deleteMany();
   await prisma.delivery.deleteMany();
+  await prisma.device.deleteMany();
+  await prisma.seenIp.deleteMany();
   await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();
   await prisma.user.deleteMany();

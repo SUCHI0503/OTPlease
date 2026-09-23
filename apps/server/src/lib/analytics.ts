@@ -16,6 +16,8 @@ export interface AppAnalytics {
     users: number;
     activeApiKeys: number;
     activeWebhooks: number;
+    /** Devices first seen (at a successful login) in the period */
+    newDevices: number;
     webhookFailures: number;
   };
   byChannel: { channel: string; requests: number; failed: number }[];
@@ -65,7 +67,7 @@ export async function getAppAnalytics(
   const from = new Date(today.getTime() - (days - 1) * DAY);
   const inRange = { applicationId, createdAt: { gte: from } };
 
-  const [statusGroups, channelGroups, logins, activeSessions, users, activeApiKeys, activeWebhooks, webhookFailures, deliveryDaily, loginDaily] =
+  const [statusGroups, channelGroups, logins, activeSessions, users, activeApiKeys, activeWebhooks, newDevices, webhookFailures, deliveryDaily, loginDaily] =
     await Promise.all([
       prisma.delivery.groupBy({ by: ["status"], where: inRange, _count: true }),
       prisma.delivery.groupBy({ by: ["requestedChannel", "status"], where: inRange, _count: true }),
@@ -74,6 +76,7 @@ export async function getAppAnalytics(
       prisma.user.count({ where: { applicationId } }),
       prisma.apiKey.count({ where: { applicationId, revokedAt: null } }),
       prisma.webhookEndpoint.count({ where: { applicationId, revokedAt: null } }),
+      prisma.device.count({ where: { applicationId, firstSeenAt: { gte: from } } }),
       prisma.webhookLog.count({ where: { ...inRange, status: "failed" } }),
       dailyCounts(prisma, "Delivery", applicationId, from),
       dailyCounts(prisma, "Session", applicationId, from),
@@ -111,6 +114,7 @@ export async function getAppAnalytics(
       users,
       activeApiKeys,
       activeWebhooks,
+      newDevices,
       webhookFailures,
     },
     byChannel: [...channels].map(([channel, c]) => ({ channel, ...c })).sort((a, b) => b.requests - a.requests),

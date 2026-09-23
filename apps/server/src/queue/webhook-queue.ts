@@ -5,7 +5,7 @@ import { bullConnection } from "./otp-queue";
 
 export const WEBHOOK_QUEUE = "webhooks";
 
-export const WEBHOOK_EVENTS = ["otp.verified", "delivery.sent", "delivery.delivered", "delivery.failed"] as const;
+export const WEBHOOK_EVENTS = ["otp.verified", "device.new", "delivery.sent", "delivery.delivered", "delivery.failed"] as const;
 export type WebhookEventType = (typeof WEBHOOK_EVENTS)[number];
 
 export interface WebhookJobData {

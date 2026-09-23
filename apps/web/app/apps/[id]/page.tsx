@@ -56,6 +56,7 @@ export default async function ApplicationPage({
         <div className="card"><span className="label">Logins</span><span className="value">{t.logins}</span></div>
         <div className="card"><span className="label">Active sessions</span><span className="value">{t.activeSessions}</span></div>
         <div className="card"><span className="label">Users</span><span className="value">{t.users}</span></div>
+        <div className="card"><span className="label">New devices</span><span className="value">{t.newDevices}</span></div>
         <div className="card"><span className="label">Failed deliveries</span><span className="value">{t.deliveriesFailed}</span></div>
       </div>
 
