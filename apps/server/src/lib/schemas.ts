@@ -34,7 +34,9 @@ export const userParamsSchema = applicationParamsSchema.extend({
 export const otpRequestSchema = z
   .object({
     phone: phoneSchema,
-    channel: z.enum(["sms", "email"]).default("sms"),
+    channel: z.enum(["sms", "whatsapp", "voice", "email"]).default("sms"),
+    // Phone channels to try, in order, if the requested one fails to send
+    fallback: z.array(z.enum(["sms", "whatsapp", "voice"])).max(2).default([]),
     email: z.string().trim().toLowerCase().email("invalid email address").optional(),
   })
   .refine((v) => v.channel !== "email" || v.email, {
@@ -52,4 +54,8 @@ export const otpVerifySchema = z.object({
 
 export const refreshSchema = z.object({
   refreshToken: z.string({ error: "refreshToken is required" }).min(1, "refreshToken is required"),
+});
+
+export const deliveryParamsSchema = applicationParamsSchema.extend({
+  deliveryId: z.string().uuid("deliveryId must be a valid id"),
 });

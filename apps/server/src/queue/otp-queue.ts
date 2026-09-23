@@ -7,7 +7,9 @@ export const OTP_QUEUE = "otp-send";
 export const MAINTENANCE_QUEUE = "maintenance";
 
 export interface OtpJobData {
-  channel: OtpChannel;
+  deliveryId: string;
+  /** Channels to try in order: the requested one first, then any fallbacks */
+  chain: OtpChannel[];
   to: string;
   /** Encrypted with secretbox, never plaintext in Redis */
   codeEnc: string;
@@ -25,12 +27,12 @@ export function bullConnection(): ConnectionOptions {
   };
 }
 
-export function createOtpQueue(): Queue<OtpJobData> {
+export function createOtpQueue(opts: { attempts?: number; backoffMs?: number } = {}): Queue<OtpJobData> {
   return new Queue<OtpJobData>(OTP_QUEUE, {
     connection: bullConnection(),
     defaultJobOptions: {
-      attempts: 5,
-      backoff: { type: "exponential", delay: 1000 },
+      attempts: opts.attempts ?? 5,
+      backoff: { type: "exponential", delay: opts.backoffMs ?? 1000 },
       removeOnComplete: true, // the code must not linger in Redis after delivery
       removeOnFail: { age: 3600 }, // keep failures for an hour to debug, then drop
     },
@@ -39,10 +41,11 @@ export function createOtpQueue(): Queue<OtpJobData> {
 
 export async function enqueueOtp(
   queue: Queue<OtpJobData>,
-  message: { channel: OtpChannel; to: string; code: string }
+  message: { deliveryId: string; chain: OtpChannel[]; to: string; code: string }
 ): Promise<void> {
   await queue.add("send", {
-    channel: message.channel,
+    deliveryId: message.deliveryId,
+    chain: message.chain,
     to: message.to,
     codeEnc: encrypt(message.code),
   });

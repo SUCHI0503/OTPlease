@@ -40,6 +40,7 @@ beforeEach(async () => {
   provider.outbox.length = 0;
   provider.failuresLeft = 0;
   provider.calls = 0;
+  await prisma.delivery.deleteMany();
   await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();
   await prisma.user.deleteMany();

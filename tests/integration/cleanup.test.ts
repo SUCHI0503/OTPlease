@@ -9,6 +9,7 @@ beforeEach(async () => {
   if (!process.env.DATABASE_URL?.includes("otplease_test")) {
     throw new Error("Refusing to run: DATABASE_URL is not the test database");
   }
+  await prisma.delivery.deleteMany();
   await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();
   await prisma.user.deleteMany();

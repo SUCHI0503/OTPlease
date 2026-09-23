@@ -1,9 +1,6 @@
-import type { OtpMessage, OtpProvider } from "./types";
+import type { OtpMessage, OtpProvider, SendResult } from "./types";
+import { maskRecipient } from "../lib/mask";
 import { env } from "../lib/env";
-
-export function maskRecipient(to: string): string {
-  return to.length <= 4 ? "****" : `${to.slice(0, 3)}${"*".repeat(to.length - 5)}${to.slice(-2)}`;
-}
 
 /**
  * Local-dev provider. Keeps messages in memory (so tests can read the code)
@@ -13,11 +10,12 @@ export function maskRecipient(to: string): string {
 export class MockProvider implements OtpProvider {
   readonly outbox: OtpMessage[] = [];
 
-  async send(message: OtpMessage): Promise<void> {
+  async send(message: OtpMessage): Promise<SendResult> {
     this.outbox.push(message);
     if (env.NODE_ENV === "development") {
       console.log(`[mock provider] ${message.channel} to ${maskRecipient(message.to)}: code ${message.code}`);
     }
+    return { providerMessageId: `mock-${this.outbox.length}` };
   }
 
   lastCodeFor(to: string): string | undefined {

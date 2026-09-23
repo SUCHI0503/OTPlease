@@ -2,7 +2,11 @@ import Fastify, { type FastifyReply } from "fastify";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./lib/prisma";
 import { tenantUsers } from "./lib/tenant";
+import { env } from "./lib/env";
 import { registerErrorHandler, sendError } from "./lib/errors";
+import { parsePhoneNumberFromString } from "libphonenumber-js";
+import { maskRecipient } from "./lib/mask";
+import { isValidTwilioSignature } from "./providers/twilio";
 import { createOtpQueue, enqueueOtp } from "./queue/otp-queue";
 import type { Redis } from "ioredis";
 import { createRedis } from "./lib/redis";
@@ -11,6 +15,7 @@ import { authenticate, createSession, refreshSession, revokeSession } from "./li
 import { generateOtpCode, hashOtpCode, verifyOtpCode } from "./lib/otp";
 import {
   applicationParamsSchema,
+  deliveryParamsSchema,
   createApplicationSchema,
   createUserSchema,
   otpRequestSchema,
@@ -24,11 +29,12 @@ export function buildApp(
     logger?: boolean;
     redis?: Redis;
     limits?: Partial<RateLimits>;
+    queue?: { attempts?: number; backoffMs?: number };
   } = {}
 ) {
   const redis = options.redis ?? createRedis();
   const limits: RateLimits = { ...defaultRateLimits, ...options.limits };
-  const otpQueue = createOtpQueue();
+  const otpQueue = createOtpQueue(options.queue);
   const app = Fastify({
     logger: (options.logger ?? true)
       ? { redact: ["req.headers.authorization", "*.phone", "*.code"] }
@@ -114,11 +120,16 @@ export function buildApp(
 
   app.post("/applications/:applicationId/otp/request", async (request, reply) => {
     const { applicationId } = applicationParamsSchema.parse(request.params);
-    const { phone, channel, email } = otpRequestSchema.parse(request.body);
+    const { phone, channel, email, fallback } = otpRequestSchema.parse(request.body);
 
     if (
       await rateLimited(reply, [
         { name: "otp-req-phone", subject: `${applicationId}:${phone}`, ...limits.otpRequestPerPhone },
+        {
+          name: "otp-req-country",
+          subject: String(parsePhoneNumberFromString(phone)?.countryCallingCode ?? "unknown"),
+          ...limits.otpRequestPerCountry,
+        },
         { name: "otp-req-ip", subject: request.ip, ...limits.otpRequestPerIp },
         { name: "otp-req-app", subject: applicationId, ...limits.otpRequestPerApplication },
       ])
@@ -157,9 +168,14 @@ export function buildApp(
     ]);
 
     // Hand delivery to the worker so the API replies immediately. The code must never be logged.
-    await enqueueOtp(otpQueue, { channel, to: channel === "email" ? email! : phone, code });
+    const to = channel === "email" ? email! : phone;
+    const chain = channel === "email" ? [channel] : [channel, ...fallback.filter((c) => c !== channel)];
+    const delivery = await prisma.delivery.create({
+      data: { applicationId, requestedChannel: channel, toMasked: maskRecipient(to) },
+    });
+    await enqueueOtp(otpQueue, { deliveryId: delivery.id, chain, to, code });
 
-    return reply.status(202).send({ status: "otp_request_accepted", userId: user.id });
+    return reply.status(202).send({ status: "otp_request_accepted", userId: user.id, deliveryId: delivery.id });
   });
 
   app.post("/applications/:applicationId/otp/verify", async (request, reply) => {
@@ -218,6 +234,55 @@ export function buildApp(
 
     const tokens = await createSession(prisma, applicationId, user.id);
     return reply.status(200).send({ status: "verified", userId: user.id, ...tokens });
+  });
+
+  // ---------- Delivery status ----------
+  app.get("/applications/:applicationId/deliveries/:deliveryId", async (request, reply) => {
+    const { applicationId, deliveryId } = deliveryParamsSchema.parse(request.params);
+    const delivery = await prisma.delivery.findFirst({ where: { id: deliveryId, applicationId } });
+    if (!delivery) return sendError(reply, 404, "DELIVERY_NOT_FOUND", "delivery not found");
+    const { providerMessageId: _hidden, ...safe } = delivery;
+    return safe;
+  });
+
+  // Twilio posts form-encoded status callbacks
+  app.addContentTypeParser(
+    "application/x-www-form-urlencoded",
+    { parseAs: "string" },
+    (_req, body, done) => done(null, Object.fromEntries(new URLSearchParams(body as string)))
+  );
+
+  const STATUS_RANK: Record<string, number> = { queued: 0, sent: 1, delivered: 2 };
+  const TWILIO_STATUS: Record<string, string> = {
+    sent: "sent",
+    delivered: "delivered",
+    read: "delivered",
+    undelivered: "failed",
+    failed: "failed",
+  };
+
+  app.post("/webhooks/twilio/status", async (request, reply) => {
+    if (!env.TWILIO_AUTH_TOKEN || !env.TWILIO_STATUS_CALLBACK_URL) {
+      return sendError(reply, 503, "WEBHOOK_NOT_CONFIGURED", "twilio callbacks are not configured");
+    }
+    const params = (request.body ?? {}) as Record<string, string>;
+    const signature = request.headers["x-twilio-signature"] as string | undefined;
+    if (!isValidTwilioSignature(env.TWILIO_AUTH_TOKEN, env.TWILIO_STATUS_CALLBACK_URL, params, signature)) {
+      return sendError(reply, 403, "INVALID_SIGNATURE", "invalid signature");
+    }
+
+    const sid = params.MessageSid ?? params.CallSid;
+    const next = TWILIO_STATUS[params.MessageStatus ?? params.CallStatus ?? ""];
+    if (sid && next) {
+      const delivery = await prisma.delivery.findFirst({ where: { providerMessageId: sid } });
+      // Callbacks can arrive out of order: never move a delivery backwards
+      const stale = delivery && next !== "failed" && (STATUS_RANK[next] ?? 0) <= (STATUS_RANK[delivery.status] ?? 0);
+      const alreadyDone = delivery?.status === "delivered";
+      if (delivery && !stale && !alreadyDone) {
+        await prisma.delivery.update({ where: { id: delivery.id }, data: { status: next } });
+      }
+    }
+    return reply.status(204).send();
   });
 
   // ---------- Sessions ----------

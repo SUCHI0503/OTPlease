@@ -28,6 +28,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   mock.outbox.length = 0;
   await flushTestRedis();
+  await prisma.delivery.deleteMany();
   await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();
   await prisma.user.deleteMany();
@@ -72,6 +73,20 @@ describe("rate limiting and abuse protection (Phase 8)", () => {
     }
     expect(statuses.filter((s) => s === 202)).toHaveLength(6);
     expect(statuses.filter((s) => s === 429)).toHaveLength(2);
+  });
+
+  it("limits sends into one country across phones and tenants", async () => {
+    const capped = buildApp({ logger: false, limits: { otpRequestPerCountry: { limit: 2, windowSeconds: 3600 } } });
+    await capped.ready();
+    const codes: number[] = [];
+    for (const [i, phone] of ["+919876543210", "+919876543211", "+919876543212", "+14155552671"].entries()) {
+      const created = await capped.inject({ method: "POST", url: "/applications", payload: { name: `T${i}` } });
+      const id = (created.json() as { id: string }).id;
+      const res = await capped.inject({ method: "POST", url: `/applications/${id}/otp/request`, payload: { phone } });
+      codes.push(res.statusCode);
+    }
+    expect(codes).toEqual([202, 202, 429, 202]); // two Indian numbers allowed, third blocked, US unaffected
+    await capped.close();
   });
 
   it("limits one tenant's total sends (spending cap)", async () => {

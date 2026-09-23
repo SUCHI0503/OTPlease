@@ -56,3 +56,20 @@ model Session {
   @@index([userId])
   @@index([applicationId])
 }
+
+model Delivery {
+  id                String   @id @default(uuid())
+  applicationId     String
+  requestedChannel  String
+  channel           String?
+  status            String   @default("queued")
+  providerMessageId String?
+  toMasked          String
+  error             String?
+  attempts          Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([applicationId])
+  @@index([providerMessageId])
+}

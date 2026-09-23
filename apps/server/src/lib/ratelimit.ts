@@ -18,6 +18,7 @@ export interface LimitResult {
 export interface RateLimits {
   otpRequestPerPhone: { limit: number; windowSeconds: number };
   otpRequestPerIp: { limit: number; windowSeconds: number };
+  otpRequestPerCountry: { limit: number; windowSeconds: number };
   otpRequestPerApplication: { limit: number; windowSeconds: number };
   verifyPerPhone: { limit: number; windowSeconds: number };
   verifyPerIp: { limit: number; windowSeconds: number };
@@ -28,6 +29,8 @@ export const defaultRateLimits: RateLimits = {
   // Also the cost guard against SMS pumping: few sends per phone, a hard cap per tenant
   otpRequestPerPhone: { limit: 3, windowSeconds: 600 },
   otpRequestPerIp: { limit: 20, windowSeconds: 600 },
+  // Caps sends into any one country (a common SMS-pumping target) across all tenants
+  otpRequestPerCountry: { limit: 500, windowSeconds: 3600 },
   otpRequestPerApplication: { limit: 1000, windowSeconds: 3600 },
   // Brute-force guard. Requesting a fresh OTP resets the per-code attempts,
   // so this per-phone cap is what really stops code guessing.
