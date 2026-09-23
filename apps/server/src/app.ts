@@ -33,6 +33,8 @@ export function buildApp(
     redis?: Redis;
     limits?: Partial<RateLimits>;
     queue?: { attempts?: number; backoffMs?: number };
+    /** Set false when several apps share the process (tests), so closing one does not disconnect the shared Prisma client */
+    disconnectPrisma?: boolean;
   } = {}
 ) {
   const redis = options.redis ?? createRedis();
@@ -48,7 +50,7 @@ export function buildApp(
 
   app.addHook("onClose", async () => {
     await otpQueue.close();
-    await prisma.$disconnect();
+    if (options.disconnectPrisma !== false) await prisma.$disconnect();
     if (!options.redis) redis.disconnect();
   });
 

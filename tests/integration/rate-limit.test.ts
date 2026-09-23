@@ -76,7 +76,7 @@ describe("rate limiting and abuse protection (Phase 8)", () => {
   });
 
   it("limits sends into one country across phones and tenants", async () => {
-    const capped = buildTestApp({ logger: false, limits: { otpRequestPerCountry: { limit: 2, windowSeconds: 3600 } } });
+    const capped = buildTestApp({ logger: false, disconnectPrisma: false, limits: { otpRequestPerCountry: { limit: 2, windowSeconds: 3600 } } });
     await capped.ready();
     const codes: number[] = [];
     for (const [i, phone] of ["+919876543210", "+919876543211", "+919876543212", "+14155552671"].entries()) {
@@ -92,6 +92,7 @@ describe("rate limiting and abuse protection (Phase 8)", () => {
   it("limits one tenant's total sends (spending cap)", async () => {
     const capped = buildTestApp({
       logger: false,
+      disconnectPrisma: false,
             limits: { otpRequestPerApplication: { limit: 2, windowSeconds: 3600 } },
     });
     await capped.ready();
