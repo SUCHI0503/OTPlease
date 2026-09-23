@@ -87,3 +87,32 @@ model ApiKey {
 
   @@index([applicationId])
 }
+
+model WebhookEndpoint {
+  id            String    @id @default(uuid())
+  applicationId String
+  url           String
+  secretEnc     String
+  events        String[]
+  createdAt     DateTime  @default(now())
+  revokedAt     DateTime?
+
+  @@index([applicationId])
+}
+
+model WebhookLog {
+  id             String   @id @default(uuid())
+  applicationId  String
+  endpointId     String
+  eventId        String
+  type           String
+  status         String   @default("pending")
+  attempts       Int      @default(0)
+  lastStatusCode Int?
+  lastError      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([endpointId])
+  @@index([applicationId])
+}

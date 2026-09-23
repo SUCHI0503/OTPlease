@@ -123,7 +123,7 @@ describe("API keys (Phase 11)", () => {
 
     const row = await prisma.apiKey.findFirstOrThrow();
     expect(row.keyHash).not.toContain(created.key);
-    expect(row.keyHash).not.toContain(created.key.split("_")[2]!);
+    expect(row.keyHash).not.toContain(created.key.slice("otpl_".length + 13));
 
     const list = await app.inject({ method: "GET", url: `/applications/${id}/api-keys`, headers: admin });
     expect(list.body).not.toContain(created.key);

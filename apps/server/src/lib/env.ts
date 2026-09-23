@@ -11,6 +11,8 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  // Lets webhooks point at localhost/private addresses. Local dev and tests only.
+  WEBHOOK_ALLOW_PRIVATE_URLS: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
   // Optional Twilio (SMS, WhatsApp, Voice). Without it those channels use the mock provider.
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
@@ -28,6 +30,9 @@ const checkedSchema = envSchema.superRefine((v, ctx) => {
   const twilioSet = v.TWILIO_ACCOUNT_SID || v.TWILIO_AUTH_TOKEN;
   if (twilioSet && !(v.TWILIO_ACCOUNT_SID && v.TWILIO_AUTH_TOKEN)) {
     ctx.addIssue({ code: "custom", path: ["TWILIO_AUTH_TOKEN"], message: "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set together" });
+  }
+  if (v.NODE_ENV === "production" && v.WEBHOOK_ALLOW_PRIVATE_URLS) {
+    ctx.addIssue({ code: "custom", path: ["WEBHOOK_ALLOW_PRIVATE_URLS"], message: "must be false in production (SSRF protection)" });
   }
   // The mock provider must never be the real delivery path in production
   if (v.NODE_ENV === "production" && !(v.TWILIO_ACCOUNT_SID && v.SMTP_HOST)) {

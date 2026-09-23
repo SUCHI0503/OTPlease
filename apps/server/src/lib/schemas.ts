@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { normalizePhone } from "./phone";
 import { SCOPES } from "./apikeys";
+import { WEBHOOK_EVENTS } from "../queue/webhook-queue";
 
 export const createApplicationSchema = z.object({
   name: z.string().trim().min(1, "name is required").max(100, "name is too long"),
@@ -68,4 +69,13 @@ export const createApiKeySchema = z.object({
 
 export const apiKeyParamsSchema = applicationParamsSchema.extend({
   keyId: z.string().uuid("keyId must be a valid id"),
+});
+
+export const createWebhookSchema = z.object({
+  url: z.string().trim().min(1, "url is required").max(2000, "url is too long"),
+  events: z.array(z.enum(WEBHOOK_EVENTS)).min(1, "at least one event is required"),
+});
+
+export const webhookParamsSchema = applicationParamsSchema.extend({
+  webhookId: z.string().uuid("webhookId must be a valid id"),
 });

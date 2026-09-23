@@ -9,6 +9,7 @@ export const SCOPES = [
   "otp:verify",
   "deliveries:read",
   "keys:manage",
+  "webhooks:manage",
 ] as const;
 export type Scope = (typeof SCOPES)[number];
 

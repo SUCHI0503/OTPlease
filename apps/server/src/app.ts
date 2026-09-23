@@ -3,11 +3,15 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "./lib/prisma";
 import { tenantUsers } from "./lib/tenant";
 import { env } from "./lib/env";
+import crypto from "node:crypto";
 import { registerErrorHandler, sendError } from "./lib/errors";
 import { parsePhoneNumberFromString } from "libphonenumber-js";
 import { maskRecipient } from "./lib/mask";
 import { isValidTwilioSignature } from "./providers/twilio";
 import { isAdminToken, issueApiKey, verifyApiKey, type Scope } from "./lib/apikeys";
+import { createWebhookEmitter, createWebhookQueue } from "./queue/webhook-queue";
+import { encrypt } from "./lib/secretbox";
+import { validateWebhookUrl } from "./lib/webhook-http";
 import { createOtpQueue, enqueueOtp } from "./queue/otp-queue";
 import type { Redis } from "ioredis";
 import { createRedis } from "./lib/redis";
@@ -19,6 +23,8 @@ import {
   deliveryParamsSchema,
   apiKeyParamsSchema,
   createApiKeySchema,
+  createWebhookSchema,
+  webhookParamsSchema,
   createApplicationSchema,
   createUserSchema,
   otpRequestSchema,
@@ -35,11 +41,14 @@ export function buildApp(
     queue?: { attempts?: number; backoffMs?: number };
     /** Set false when several apps share the process (tests), so closing one does not disconnect the shared Prisma client */
     disconnectPrisma?: boolean;
+    webhookQueue?: { attempts?: number; backoffMs?: number };
   } = {}
 ) {
   const redis = options.redis ?? createRedis();
   const limits: RateLimits = { ...defaultRateLimits, ...options.limits };
   const otpQueue = createOtpQueue(options.queue);
+  const webhookQueue = createWebhookQueue(options.webhookQueue);
+  const emit = createWebhookEmitter(prisma, webhookQueue);
   const app = Fastify({
     logger: (options.logger ?? true)
       ? { redact: ["req.headers.authorization", "*.phone", "*.code"] }
@@ -50,6 +59,7 @@ export function buildApp(
 
   app.addHook("onClose", async () => {
     await otpQueue.close();
+    await webhookQueue.close();
     if (options.disconnectPrisma !== false) await prisma.$disconnect();
     if (!options.redis) redis.disconnect();
   });
@@ -149,6 +159,58 @@ export function buildApp(
     });
     if (revoked.count === 0) return sendError(reply, 404, "API_KEY_NOT_FOUND", "api key not found");
     return reply.status(204).send();
+  });
+
+  // ---------- Webhooks ----------
+  app.post("/applications/:applicationId/webhooks", async (request, reply) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "webhooks:manage", applicationId, allowAdmin: true }))) return reply;
+    const { url, events } = createWebhookSchema.parse(request.body);
+
+    const problem = validateWebhookUrl(url, env.WEBHOOK_ALLOW_PRIVATE_URLS);
+    if (problem) return sendError(reply, 400, "INVALID_WEBHOOK_URL", problem);
+
+    const application = await prisma.application.findUnique({ where: { id: applicationId } });
+    if (!application) return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
+
+    const secret = `whsec_${crypto.randomBytes(32).toString("base64url")}`;
+    const endpoint = await prisma.webhookEndpoint.create({
+      data: { applicationId, url, events, secretEnc: encrypt(secret) },
+    });
+    // The signing secret is shown exactly once
+    return reply.status(201).send({ id: endpoint.id, url, events, createdAt: endpoint.createdAt, secret });
+  });
+
+  app.get("/applications/:applicationId/webhooks", async (request, reply) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "webhooks:manage", applicationId, allowAdmin: true }))) return reply;
+    return prisma.webhookEndpoint.findMany({
+      where: { applicationId },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, url: true, events: true, createdAt: true, revokedAt: true },
+    });
+  });
+
+  app.delete("/applications/:applicationId/webhooks/:webhookId", async (request, reply) => {
+    const { applicationId, webhookId } = webhookParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "webhooks:manage", applicationId, allowAdmin: true }))) return reply;
+    const revoked = await prisma.webhookEndpoint.updateMany({
+      where: { id: webhookId, applicationId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    if (revoked.count === 0) return sendError(reply, 404, "WEBHOOK_NOT_FOUND", "webhook not found");
+    return reply.status(204).send();
+  });
+
+  app.get("/applications/:applicationId/webhooks/:webhookId/logs", async (request, reply) => {
+    const { applicationId, webhookId } = webhookParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "webhooks:manage", applicationId, allowAdmin: true }))) return reply;
+    return prisma.webhookLog.findMany({
+      where: { applicationId, endpointId: webhookId },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      select: { id: true, eventId: true, type: true, status: true, attempts: true, lastStatusCode: true, lastError: true, createdAt: true },
+    });
   });
 
   // ---------- Users (always inside one application) ----------
@@ -310,6 +372,7 @@ export function buildApp(
     }
 
     const tokens = await createSession(prisma, applicationId, user.id);
+    await emit(applicationId, "otp.verified", { userId: user.id });
     return reply.status(200).send({ status: "verified", userId: user.id, ...tokens });
   });
 
@@ -358,6 +421,13 @@ export function buildApp(
       const alreadyDone = delivery?.status === "delivered";
       if (delivery && !stale && !alreadyDone) {
         await prisma.delivery.update({ where: { id: delivery.id }, data: { status: next } });
+        if (next === "delivered" || next === "failed") {
+          await emit(delivery.applicationId, next === "delivered" ? "delivery.delivered" : "delivery.failed", {
+            deliveryId: delivery.id,
+            channel: delivery.channel,
+            recipient: delivery.toMasked,
+          });
+        }
       }
     }
     return reply.status(204).send();

@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     env: loadEnv("test", process.cwd(), ""),
     fileParallelism: false,
+    setupFiles: ["../../tests/setup.ts"],
     include: ["../../tests/**/*.test.ts"],
   },
 });

@@ -3,14 +3,15 @@ import { prisma } from "../../server/src/lib/prisma";
 import { decrypt } from "../../server/src/lib/secretbox";
 import { OTP_QUEUE, bullConnection, type OtpJobData } from "../../server/src/queue/otp-queue";
 import type { ProviderRegistry } from "../../server/src/providers";
+import type { WebhookEmitter } from "../../server/src/queue/webhook-queue";
 
 /**
  * Sends queued OTP messages. Tries each channel in the job's chain in order and
  * stops at the first success. If every channel fails, the error makes BullMQ
  * retry the whole chain with backoff; the last retry marks the delivery failed.
  */
-export function createOtpWorker(providers: ProviderRegistry): Worker<OtpJobData> {
-  return new Worker<OtpJobData>(
+export function createOtpWorker(providers: ProviderRegistry, emit?: WebhookEmitter): Worker<OtpJobData> {
+  const worker = new Worker<OtpJobData>(
     OTP_QUEUE,
     async (job) => {
       const { chain, to, codeEnc, deliveryId } = job.data;
@@ -21,10 +22,11 @@ export function createOtpWorker(providers: ProviderRegistry): Worker<OtpJobData>
       for (const channel of chain) {
         try {
           const result = await providers[channel].send({ channel, to, code });
-          await prisma.delivery.update({
+          const delivery = await prisma.delivery.update({
             where: { id: deliveryId },
             data: { status: "sent", channel, providerMessageId: result.providerMessageId, attempts, error: null },
           });
+          await emit?.(delivery.applicationId, "delivery.sent", { deliveryId, channel, recipient: delivery.toMasked });
           return;
         } catch (err) {
           lastError = `${channel}: ${err instanceof Error ? err.message : "send failed"}`;
@@ -32,12 +34,18 @@ export function createOtpWorker(providers: ProviderRegistry): Worker<OtpJobData>
       }
 
       const isLastAttempt = attempts >= (job.opts.attempts ?? 1);
-      await prisma.delivery.update({
+      const failed = await prisma.delivery.update({
         where: { id: deliveryId },
         data: { status: isLastAttempt ? "failed" : "queued", attempts, error: lastError },
       });
+      if (isLastAttempt) {
+        await emit?.(failed.applicationId, "delivery.failed", { deliveryId, recipient: failed.toMasked, error: lastError });
+      }
       throw new Error(lastError);
     },
     { connection: bullConnection(), concurrency: 10 }
   );
+  // Without a listener, BullMQ connection errors would be unhandled
+  worker.on("error", (err) => console.error(`[otp worker] ${err.message}`));
+  return worker;
 }
