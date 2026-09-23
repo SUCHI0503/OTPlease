@@ -25,7 +25,7 @@ class SlowFlakyProvider extends MockProvider {
 }
 
 const provider = new SlowFlakyProvider();
-const worker = createOtpWorker({ sms: provider, email: provider });
+const worker = createOtpWorker({ sms: provider, whatsapp: provider, voice: provider, email: provider });
 
 beforeAll(async () => {
   if (!process.env.DATABASE_URL?.includes("otplease_test")) {

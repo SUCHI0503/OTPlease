@@ -1,4 +1,9 @@
 import { Redis } from "ioredis";
+import { createOtpWorker } from "../apps/worker/src/otp-worker";
+import type { MockProvider } from "../apps/server/src/providers";
+import { buildApp } from "../apps/server/src/app";
+import { prisma } from "../apps/server/src/lib/prisma";
+import { SCOPES, issueApiKey } from "../apps/server/src/lib/apikeys";
 
 /** Flushes Redis, but only ever the dedicated test database (/1). */
 export async function flushTestRedis(): Promise<void> {
@@ -11,12 +16,9 @@ export async function flushTestRedis(): Promise<void> {
   redis.disconnect();
 }
 
-import { createOtpWorker } from "../apps/worker/src/otp-worker";
-import type { MockProvider } from "../apps/server/src/providers";
-
 /** Starts the real worker, wired to the mock provider so no real message is ever sent. */
 export function startTestWorker(mock: MockProvider) {
-  return createOtpWorker({ sms: mock, email: mock });
+  return createOtpWorker({ sms: mock, whatsapp: mock, voice: mock, email: mock });
 }
 
 export async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 5000) {
@@ -29,10 +31,6 @@ export async function waitFor(condition: () => boolean | Promise<boolean>, timeo
 
 export const waitForOutbox = (mock: MockProvider, count: number) =>
   waitFor(() => mock.outbox.length >= count);
-
-import { buildApp } from "../apps/server/src/app";
-import { prisma } from "../apps/server/src/lib/prisma";
-import { SCOPES, issueApiKey } from "../apps/server/src/lib/apikeys";
 
 export const ADMIN_TOKEN = process.env.ADMIN_TOKEN!;
 
