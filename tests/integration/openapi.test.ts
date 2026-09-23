@@ -60,7 +60,7 @@ describe("API docs (Phase 13)", () => {
 
   it("documents the webhook events and how to verify them", async () => {
     const doc = await getDoc();
-    expect(Object.keys(doc.webhooks).sort()).toEqual(["delivery.delivered", "delivery.failed", "delivery.sent", "device.new", "otp.verified"]);
+    expect(Object.keys(doc.webhooks).sort()).toEqual(["delivery.delivered", "delivery.failed", "delivery.sent", "device.new", "otp.verified", "risk.blocked", "risk.challenged"]);
     expect(JSON.stringify(doc)).toContain("x-otplease-signature");
   });
 

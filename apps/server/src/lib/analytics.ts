@@ -18,6 +18,10 @@ export interface AppAnalytics {
     activeWebhooks: number;
     /** Devices first seen (at a successful login) in the period */
     newDevices: number;
+    /** Risk decisions in the period. "wouldBlock" counts blocks in log-only mode, which did not stop anything. */
+    riskChallenged: number;
+    riskBlocked: number;
+    riskWouldBlock: number;
     webhookFailures: number;
   };
   byChannel: { channel: string; requests: number; failed: number }[];
@@ -67,7 +71,7 @@ export async function getAppAnalytics(
   const from = new Date(today.getTime() - (days - 1) * DAY);
   const inRange = { applicationId, createdAt: { gte: from } };
 
-  const [statusGroups, channelGroups, logins, activeSessions, users, activeApiKeys, activeWebhooks, newDevices, webhookFailures, deliveryDaily, loginDaily] =
+  const [statusGroups, channelGroups, logins, activeSessions, users, activeApiKeys, activeWebhooks, newDevices, riskGroups, webhookFailures, deliveryDaily, loginDaily] =
     await Promise.all([
       prisma.delivery.groupBy({ by: ["status"], where: inRange, _count: true }),
       prisma.delivery.groupBy({ by: ["requestedChannel", "status"], where: inRange, _count: true }),
@@ -77,6 +81,7 @@ export async function getAppAnalytics(
       prisma.apiKey.count({ where: { applicationId, revokedAt: null } }),
       prisma.webhookEndpoint.count({ where: { applicationId, revokedAt: null } }),
       prisma.device.count({ where: { applicationId, firstSeenAt: { gte: from } } }),
+      prisma.riskDecision.groupBy({ by: ["decision", "enforced"], where: inRange, _count: true }),
       prisma.webhookLog.count({ where: { ...inRange, status: "failed" } }),
       dailyCounts(prisma, "Delivery", applicationId, from),
       dailyCounts(prisma, "Session", applicationId, from),
@@ -87,6 +92,8 @@ export async function getAppAnalytics(
   const delivered = byStatus("delivered");
   const failed = byStatus("failed");
   const finished = sent + delivered + failed;
+  const risk = (decision: string, enforced?: boolean) =>
+    riskGroups.filter((g) => g.decision === decision && (enforced === undefined || g.enforced === enforced)).reduce((n, g) => n + g._count, 0);
 
   const channels = new Map<string, { requests: number; failed: number }>();
   for (const g of channelGroups) {
@@ -115,6 +122,9 @@ export async function getAppAnalytics(
       activeApiKeys,
       activeWebhooks,
       newDevices,
+      riskChallenged: risk("challenge"),
+      riskBlocked: risk("block", true),
+      riskWouldBlock: risk("block", false),
       webhookFailures,
     },
     byChannel: [...channels].map(([channel, c]) => ({ channel, ...c })).sort((a, b) => b.requests - a.requests),

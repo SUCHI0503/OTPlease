@@ -57,6 +57,8 @@ export default async function ApplicationPage({
         <div className="card"><span className="label">Active sessions</span><span className="value">{t.activeSessions}</span></div>
         <div className="card"><span className="label">Users</span><span className="value">{t.users}</span></div>
         <div className="card"><span className="label">New devices</span><span className="value">{t.newDevices}</span></div>
+        <div className="card"><span className="label">Risk challenges</span><span className="value">{t.riskChallenged}</span></div>
+        <div className="card"><span className="label">Risk blocks</span><span className="value">{t.riskBlocked}</span></div>
         <div className="card"><span className="label">Failed deliveries</span><span className="value">{t.deliveriesFailed}</span></div>
       </div>
 
@@ -64,6 +66,10 @@ export default async function ApplicationPage({
         <h2>Daily activity</h2>
         <DailyChart daily={stats.data.daily} />
       </section>
+
+      {t.riskWouldBlock > 0 && (
+        <p className="muted">{t.riskWouldBlock} request{t.riskWouldBlock === 1 ? "" : "s"} would have been blocked, but risk rules are in log-only mode. Review them, then set mode to enforce.</p>
+      )}
 
       <section>
         <h2>By channel</h2>

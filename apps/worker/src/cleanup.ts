@@ -29,7 +29,8 @@ export async function runCleanup(prisma: PrismaClient, now = new Date()) {
   const cutoff = new Date(now.getTime() - 180 * DAY);
   const devices = await prisma.device.deleteMany({ where: { lastSeenAt: { lt: cutoff } } });
   const ips = await prisma.seenIp.deleteMany({ where: { lastSeenAt: { lt: cutoff } } });
-  return { otps: otps.count, sessions: sessions.count, deliveries: deliveries.count, devices: devices.count + ips.count };
+  const decisions = await prisma.riskDecision.deleteMany({ where: { createdAt: { lt: new Date(now.getTime() - 30 * DAY) } } });
+  return { otps: otps.count, sessions: sessions.count, deliveries: deliveries.count, devices: devices.count + ips.count, riskDecisions: decisions.count };
 }
 
 /** Runs cleanup every hour. upsert makes restarting the worker safe (no duplicate schedules). */

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RULE_CODES, riskConfigSchema } from "./lib/risk";
 import { SCOPES } from "./lib/apikeys";
 import { WEBHOOK_EVENTS } from "./queue/webhook-queue";
 import {
@@ -82,10 +83,10 @@ export function buildOpenApiDocument() {
 
   add("post", `${A}/otp/request`, {
     summary: "Request a one-time code",
-    description: "Optionally send `context` ({ ip, deviceId, userAgent }) forwarded from your user's request to get `signals` back: whether the device or IP is new for this user, and how many different phones used them recently. Creates or finds the user, invalidates older codes, and queues the message. Returns immediately (202); a worker sends it. When `channel` is `email`, `email` is required. `fallback` lists phone channels to try, in order, if the first fails. Rate limited (429).",
+    description: "The response includes `risk` ({ decision, enforced, score, reasons }). A `challenge` still sends the code: your backend decides what extra proof to ask for. A `block` (only in enforce mode) returns 403 and sends nothing. Optionally send `context` ({ ip, deviceId, userAgent }) forwarded from your user's request to get `signals` back: whether the device or IP is new for this user, and how many different phones used them recently. Creates or finds the user, invalidates older codes, and queues the message. Returns immediately (202); a worker sends it. When `channel` is `email`, `email` is required. `fallback` lists phone channels to try, in order, if the first fails. Rate limited (429).",
     tag: "OTP", auth: "key", scope: "otp:request", body: schemaOf(otpRequestSchema),
     ok: { status: "202", response: json({ type: "object", properties: { status: { type: "string" }, userId: { type: "string" }, deliveryId: { type: "string" } } }, "Accepted") },
-    extraErrors: { "429": "Rate limited. See the Retry-After header." },
+    extraErrors: { "403": "Blocked by the risk rules (code RISK_BLOCKED), or key not allowed", "429": "Rate limited. See the Retry-After header." },
   });
   add("post", `${A}/otp/verify`, {
     summary: "Verify a one-time code and start a session",
@@ -110,6 +111,13 @@ export function buildOpenApiDocument() {
   add("delete", `${A}/webhooks/{webhookId}`, { summary: "Revoke a webhook endpoint", tag: "Webhooks", auth: "adminOrKey", scope: "webhooks:manage", ok: noContent, extraErrors: { "404": "Not found" } });
   add("get", `${A}/webhooks/{webhookId}/logs`, { summary: "Recent delivery attempts for a webhook", tag: "Webhooks", auth: "adminOrKey", scope: "webhooks:manage", ok: { status: "200", response: json({ type: "array", items: { type: "object" } }) } });
 
+  add("get", `${A}/risk-config`, { summary: "Get the risk rules for an application", description: "Returns the effective configuration: saved values with defaults filling the gaps.", tag: "Risk", auth: "adminOrKey", scope: "risk:manage", ok: { status: "200", response: json(ref("RiskConfig")) } });
+  add("put", `${A}/risk-config`, {
+    summary: "Replace the risk rules",
+    description: "Anything you leave out returns to its default. `mode` is `off` (no evaluation), `log` (evaluate and record, never block; the default) or `enforce` (block for real). A score at or above `challengeScore` gives `challenge`; at or above `blockScore`, or any hard rule (blocked country, velocity limits), gives `block`.",
+    tag: "Risk", auth: "adminOrKey", scope: "risk:manage", body: schemaOf(riskConfigSchema), ok: { status: "200", response: json(ref("RiskConfig")) }, extraErrors: { "404": "Application not found" },
+  });
+  add("get", `${A}/risk/decisions`, { summary: "Recent challenge and block decisions", description: "Allow decisions are not stored. In log mode, blocks appear with `enforced: false`, so you can review what would have been blocked before turning enforcement on.", tag: "Risk", auth: "adminOrKey", scope: "risk:manage", ok: { status: "200", response: json({ type: "array", items: ref("RiskDecision") }) } });
   add("get", `${A}/analytics`, { summary: "Usage statistics for one application", tag: "Analytics", auth: "adminOrKey", scope: "analytics:read", query: true, ok: { status: "200", response: json({ type: "object" }) }, extraErrors: { "404": "Application not found" } });
   add("get", "/analytics/overview", { summary: "Statistics across all applications", tag: "Analytics", auth: "admin", query: true, ok: { status: "200", response: json({ type: "object" }) } });
 
@@ -141,11 +149,13 @@ export function buildOpenApiDocument() {
         "The signature is HMAC-SHA256 of `<timestamp>.<raw body>` with your endpoint secret. Reject deliveries whose timestamp is more than 5 minutes old, and remember event ids to reject replays. Retries reuse the event id.",
       ].join("\n"),
     },
-    tags: ["System", "Applications", "OTP", "Users", "API keys", "Webhooks", "Analytics", "Sessions", "Internal"].map((name) => ({ name })),
+    tags: ["System", "Applications", "OTP", "Users", "API keys", "Webhooks", "Risk", "Analytics", "Sessions", "Internal"].map((name) => ({ name })),
     paths,
     webhooks: {
       "otp.verified": { post: { summary: "A user verified a code", requestBody: { content: { "application/json": { schema: eventSchema("otp.verified", { type: "object", properties: { userId: { type: "string" } } }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
       "device.new": { post: { summary: "A user logged in from a device not seen before", requestBody: { content: { "application/json": { schema: eventSchema("device.new", { type: "object", properties: { userId: { type: "string" }, deviceId: { type: "string" }, isFirstDevice: { type: "boolean", description: "True when this is the user's first known device, so usually not suspicious" }, ip: { type: "string", description: "Masked" }, userAgent: { type: ["string", "null"] } } }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
+      "risk.challenged": { post: { summary: "A request scored as needing extra proof", requestBody: { content: { "application/json": { schema: eventSchema("risk.challenged", { type: "object", properties: { userId: { type: ["string", "null"] }, score: { type: "integer" }, reasons: { type: "array", items: { enum: [...RULE_CODES] } }, enforced: { type: "boolean" } } }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
+      "risk.blocked": { post: { summary: "A request was (or, in log mode, would have been) blocked", requestBody: { content: { "application/json": { schema: eventSchema("risk.blocked", { type: "object", properties: { userId: { type: ["string", "null"] }, score: { type: "integer" }, reasons: { type: "array", items: { enum: [...RULE_CODES] } }, enforced: { type: "boolean" } } }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
       "delivery.sent": { post: { summary: "A message was handed to the provider", requestBody: { content: { "application/json": { schema: eventSchema("delivery.sent", { type: "object" }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
       "delivery.delivered": { post: { summary: "The provider confirmed delivery", requestBody: { content: { "application/json": { schema: eventSchema("delivery.delivered", { type: "object" }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
       "delivery.failed": { post: { summary: "Delivery failed on every channel", requestBody: { content: { "application/json": { schema: eventSchema("delivery.failed", { type: "object" }) } } }, responses: { "2XX": { description: "Acknowledge with any 2xx" } } } },
@@ -160,6 +170,8 @@ export function buildOpenApiDocument() {
         Error: { type: "object", properties: { error: { type: "object", properties: { code: { type: "string" }, message: { type: "string" }, details: {} }, required: ["code", "message"] } } },
         Application: { type: "object", properties: { id: { type: "string", format: "uuid" }, name: { type: "string" }, createdAt: { type: "string", format: "date-time" } } },
         User: { type: "object", properties: { id: { type: "string", format: "uuid" }, applicationId: { type: "string" }, phone: { type: "string", description: "E.164" }, createdAt: { type: "string", format: "date-time" } } },
+        RiskConfig: schemaOf(riskConfigSchema),
+        RiskDecision: { type: "object", properties: { id: { type: "string" }, userId: { type: ["string", "null"] }, decision: { enum: ["challenge", "block"] }, enforced: { type: "boolean" }, score: { type: "integer" }, reasons: { type: "array", items: { enum: [...RULE_CODES] } }, country: { type: ["string", "null"] }, createdAt: { type: "string", format: "date-time" } } },
         Device: { type: "object", properties: { id: { type: "string" }, userAgent: { type: ["string", "null"] }, lastIpMasked: { type: ["string", "null"] }, firstSeenAt: { type: "string", format: "date-time" }, lastSeenAt: { type: "string", format: "date-time" } } },
         Tokens: { type: "object", properties: { accessToken: { type: "string" }, refreshToken: { type: "string" }, tokenType: { const: "Bearer" }, expiresIn: { type: "integer", description: "Access token lifetime in seconds" }, userId: { type: "string" } } },
         Delivery: { type: "object", properties: { id: { type: "string" }, requestedChannel: { type: "string" }, channel: { type: ["string", "null"], description: "Channel actually used, after any fallback" }, status: { enum: ["queued", "sent", "delivered", "failed"] }, toMasked: { type: "string" }, attempts: { type: "integer" }, error: { type: ["string", "null"] } } },

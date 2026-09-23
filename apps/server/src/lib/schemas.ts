@@ -99,3 +99,7 @@ export const webhookParamsSchema = applicationParamsSchema.extend({
 export const analyticsQuerySchema = z.object({
   days: z.coerce.number().int().min(1, "days must be at least 1").max(30, "days can be at most 30").default(7),
 });
+
+export const riskDecisionsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});

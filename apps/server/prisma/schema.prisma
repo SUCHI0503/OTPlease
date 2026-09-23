@@ -149,3 +149,26 @@ model SeenIp {
   @@unique([userId, ipHash])
   @@index([applicationId])
 }
+
+// One row per application. `config` is validated JSON (see riskConfigSchema), so adding
+// a new rule setting later needs no migration.
+model RiskConfig {
+  applicationId String   @id
+  config        Json
+  updatedAt     DateTime @updatedAt
+}
+
+// Only non-allow decisions are stored: they are what a developer reviews, and what analytics counts.
+model RiskDecision {
+  id            String   @id @default(uuid())
+  applicationId String
+  userId        String?
+  decision      String
+  enforced      Boolean
+  score         Int
+  reasons       String[]
+  country       String?
+  createdAt     DateTime @default(now())
+
+  @@index([applicationId, createdAt])
+}

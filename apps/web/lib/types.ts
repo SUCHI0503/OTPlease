@@ -18,6 +18,9 @@ export interface Analytics {
     activeApiKeys: number;
     activeWebhooks: number;
     newDevices: number;
+    riskChallenged: number;
+    riskBlocked: number;
+    riskWouldBlock: number;
     webhookFailures: number;
   };
   byChannel: { channel: string; requests: number; failed: number }[];
@@ -42,5 +45,5 @@ export interface WebhookRow {
   revokedAt: string | null;
 }
 
-export const SCOPES = ["otp:request", "otp:verify", "users:read", "users:write", "deliveries:read", "analytics:read", "keys:manage", "webhooks:manage"];
-export const WEBHOOK_EVENTS = ["otp.verified", "device.new", "delivery.sent", "delivery.delivered", "delivery.failed"];
+export const SCOPES = ["otp:request", "otp:verify", "users:read", "users:write", "deliveries:read", "analytics:read", "risk:manage", "keys:manage", "webhooks:manage"];
+export const WEBHOOK_EVENTS = ["otp.verified", "device.new", "risk.challenged", "risk.blocked", "delivery.sent", "delivery.delivered", "delivery.failed"];

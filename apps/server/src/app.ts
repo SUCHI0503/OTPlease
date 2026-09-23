@@ -10,6 +10,7 @@ import { maskRecipient } from "./lib/mask";
 import { isValidTwilioSignature } from "./providers/twilio";
 import { isAdminToken, issueApiKey, verifyApiKey, type Scope } from "./lib/apikeys";
 import { DOCS_HTML, buildOpenApiDocument } from "./openapi";
+import { evaluateRisk, getRiskConfig, loadUserHistory, riskConfigSchema, saveRiskConfig } from "./lib/risk";
 import { computeSignals, recordLogin } from "./lib/intelligence";
 import { getAppAnalytics, getOverview } from "./lib/analytics";
 import { createWebhookEmitter, createWebhookQueue } from "./queue/webhook-queue";
@@ -26,6 +27,7 @@ import {
   deliveryParamsSchema,
   analyticsQuerySchema,
   apiKeyParamsSchema,
+  riskDecisionsQuerySchema,
   createApiKeySchema,
   createWebhookSchema,
   webhookParamsSchema,
@@ -180,6 +182,36 @@ export function buildApp(
     });
     if (revoked.count === 0) return sendError(reply, 404, "API_KEY_NOT_FOUND", "api key not found");
     return reply.status(204).send();
+  });
+
+  // ---------- Risk engine ----------
+  app.get("/applications/:applicationId/risk-config", async (request, reply) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "risk:manage", applicationId, allowAdmin: true }))) return reply;
+    return getRiskConfig(prisma, applicationId);
+  });
+
+  // Replaces the whole configuration: anything left out goes back to its default
+  app.put("/applications/:applicationId/risk-config", async (request, reply) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "risk:manage", applicationId, allowAdmin: true }))) return reply;
+    const config = riskConfigSchema.parse(request.body ?? {});
+    const application = await prisma.application.findUnique({ where: { id: applicationId } });
+    if (!application) return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
+    await saveRiskConfig(prisma, applicationId, config);
+    return config;
+  });
+
+  app.get("/applications/:applicationId/risk/decisions", async (request, reply) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "risk:manage", applicationId, allowAdmin: true }))) return reply;
+    const { limit } = riskDecisionsQuerySchema.parse(request.query);
+    return prisma.riskDecision.findMany({
+      where: { applicationId },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: { id: true, userId: true, decision: true, enforced: true, score: true, reasons: true, country: true, createdAt: true },
+    });
   });
 
   // ---------- Analytics ----------
@@ -343,9 +375,50 @@ export function buildApp(
       return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
     }
 
-    const users = tenantUsers(prisma, applicationId);
-    const user = await users.findOrCreate(phone);
-    const signals = await computeSignals(prisma, redis, applicationId, user.id, phone, context);
+    // Look the user up without creating them: a blocked request must not leave a new user behind
+    const existingUser = await prisma.user.findUnique({ where: { applicationId_phone: { applicationId, phone } } });
+    const signals = await computeSignals(prisma, redis, applicationId, existingUser?.id ?? null, phone, context);
+
+    // Risk engine: `block` is enforced here (in enforce mode); `challenge` is passed to the caller to act on
+    const riskConfig = await getRiskConfig(prisma, applicationId);
+    let risk: { decision: string; enforced: boolean; score: number; reasons: string[] } | null = null;
+    if (riskConfig.mode !== "off") {
+      const country = parsePhoneNumberFromString(phone)?.country ?? null;
+      const result = evaluateRisk(
+        { signals, user: await loadUserHistory(prisma, existingUser?.id ?? null), country },
+        riskConfig
+      );
+      const enforced = riskConfig.mode === "enforce";
+      risk = { decision: result.decision, enforced, score: result.score, reasons: result.reasons.map((r) => r.code) };
+
+      if (result.decision !== "allow") {
+        await prisma.riskDecision.create({
+          data: {
+            applicationId,
+            userId: existingUser?.id ?? null,
+            decision: result.decision,
+            enforced,
+            score: result.score,
+            reasons: risk.reasons,
+            country,
+          },
+        });
+        await emit(applicationId, result.decision === "block" ? "risk.blocked" : "risk.challenged", {
+          userId: existingUser?.id ?? null,
+          score: result.score,
+          reasons: risk.reasons,
+          enforced,
+        });
+      }
+      if (result.decision === "block" && enforced) {
+        return sendError(reply, 403, "RISK_BLOCKED", "this request was blocked by risk rules", {
+          score: result.score,
+          reasons: result.reasons.map((r) => ({ code: r.code, message: r.message })),
+        });
+      }
+    }
+
+    const user = existingUser ?? (await tenantUsers(prisma, applicationId).findOrCreate(phone));
 
     const code = generateOtpCode();
     const codeHash = hashOtpCode(code);
@@ -372,7 +445,7 @@ export function buildApp(
     });
     await enqueueOtp(otpQueue, { deliveryId: delivery.id, chain, to, code });
 
-    return reply.status(202).send({ status: "otp_request_accepted", userId: user.id, deliveryId: delivery.id, signals });
+    return reply.status(202).send({ status: "otp_request_accepted", userId: user.id, deliveryId: delivery.id, signals, risk });
   });
 
   app.post("/applications/:applicationId/otp/verify", async (request, reply) => {

@@ -69,7 +69,8 @@ export async function computeSignals(
   prisma: PrismaClient,
   redis: Redis,
   applicationId: string,
-  userId: string,
+  /** null for a phone we have never seen: everything about it is new */
+  userId: string | null,
   phone: string,
   ctx: RequestContext | undefined
 ): Promise<Signals> {
@@ -79,13 +80,13 @@ export async function computeSignals(
 
   if (ctx.deviceId) {
     const deviceHash = hashDevice(applicationId, ctx.deviceId);
-    signals.newDevice = !(await prisma.device.findUnique({ where: { userId_deviceHash: { userId, deviceHash } } }));
+    signals.newDevice = !userId || !(await prisma.device.findUnique({ where: { userId_deviceHash: { userId, deviceHash } } }));
     signals.phonesFromDevice = await velocity(redis, `intel:device:${deviceHash}`, phoneKey, DEVICE_WINDOW_SECONDS);
   }
   if (ctx.ip) {
     const ipHash = hashIp(applicationId, ctx.ip);
     signals.ip = ipInfo(ctx.ip);
-    signals.newIp = !(await prisma.seenIp.findUnique({ where: { userId_ipHash: { userId, ipHash } } }));
+    signals.newIp = !userId || !(await prisma.seenIp.findUnique({ where: { userId_ipHash: { userId, ipHash } } }));
     signals.phonesFromIp = await velocity(redis, `intel:ip:${ipHash}`, phoneKey, IP_WINDOW_SECONDS);
   }
   return signals;

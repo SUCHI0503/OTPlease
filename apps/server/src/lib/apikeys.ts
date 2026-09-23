@@ -11,6 +11,7 @@ export const SCOPES = [
   "keys:manage",
   "webhooks:manage",
   "analytics:read",
+  "risk:manage",
 ] as const;
 export type Scope = (typeof SCOPES)[number];
 
