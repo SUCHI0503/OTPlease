@@ -1,9 +1,12 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyReply } from "fastify";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./lib/prisma";
 import { tenantUsers } from "./lib/tenant";
 import { registerErrorHandler, sendError } from "./lib/errors";
 import { buildProviders, type ProviderRegistry } from "./providers";
+import type { Redis } from "ioredis";
+import { createRedis } from "./lib/redis";
+import { checkRateLimits, defaultRateLimits, type RateLimits, type Rule } from "./lib/ratelimit";
 import { authenticate, createSession, refreshSession, revokeSession } from "./lib/session";
 import { generateOtpCode, hashOtpCode, verifyOtpCode } from "./lib/otp";
 import {
@@ -16,7 +19,16 @@ import {
   userParamsSchema,
 } from "./lib/schemas";
 
-export function buildApp(options: { logger?: boolean; providers?: ProviderRegistry } = {}) {
+export function buildApp(
+  options: {
+    logger?: boolean;
+    providers?: ProviderRegistry;
+    redis?: Redis;
+    limits?: Partial<RateLimits>;
+  } = {}
+) {
+  const redis = options.redis ?? createRedis();
+  const limits: RateLimits = { ...defaultRateLimits, ...options.limits };
   const providers = options.providers ?? buildProviders();
   const app = Fastify({
     logger: (options.logger ?? true)
@@ -28,7 +40,20 @@ export function buildApp(options: { logger?: boolean; providers?: ProviderRegist
 
   app.addHook("onClose", async () => {
     await prisma.$disconnect();
+    if (!options.redis) redis.disconnect();
   });
+
+  // Returns true (and sends a 429) if any rule is over its limit. If Redis is
+  // down the error propagates, so protected routes fail closed instead of open.
+  async function rateLimited(reply: FastifyReply, rules: Rule[]): Promise<boolean> {
+    const result = await checkRateLimits(redis, rules);
+    if (!result.limited) return false;
+    reply.header("Retry-After", String(result.retryAfterSeconds));
+    sendError(reply, 429, "RATE_LIMITED", "too many requests, try again later", {
+      retryAfterSeconds: result.retryAfterSeconds,
+    });
+    return true;
+  }
 
   app.get("/health", async () => ({ status: "ok", service: "otplease-server" }));
 
@@ -91,6 +116,16 @@ export function buildApp(options: { logger?: boolean; providers?: ProviderRegist
     const { applicationId } = applicationParamsSchema.parse(request.params);
     const { phone, channel, email } = otpRequestSchema.parse(request.body);
 
+    if (
+      await rateLimited(reply, [
+        { name: "otp-req-phone", subject: `${applicationId}:${phone}`, ...limits.otpRequestPerPhone },
+        { name: "otp-req-ip", subject: request.ip, ...limits.otpRequestPerIp },
+        { name: "otp-req-app", subject: applicationId, ...limits.otpRequestPerApplication },
+      ])
+    ) {
+      return reply;
+    }
+
     const application = await prisma.application.findUnique({ where: { id: applicationId } });
     if (!application) {
       return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
@@ -130,6 +165,15 @@ export function buildApp(options: { logger?: boolean; providers?: ProviderRegist
   app.post("/applications/:applicationId/otp/verify", async (request, reply) => {
     const { applicationId } = applicationParamsSchema.parse(request.params);
     const { phone, code } = otpVerifySchema.parse(request.body);
+
+    if (
+      await rateLimited(reply, [
+        { name: "verify-phone", subject: `${applicationId}:${phone}`, ...limits.verifyPerPhone },
+        { name: "verify-ip", subject: request.ip, ...limits.verifyPerIp },
+      ])
+    ) {
+      return reply;
+    }
 
     // Unknown phone and "no active code" return the same error, so callers
     // cannot probe which phone numbers are registered.
@@ -179,6 +223,9 @@ export function buildApp(options: { logger?: boolean; providers?: ProviderRegist
   // ---------- Sessions ----------
   app.post("/auth/refresh", async (request, reply) => {
     const { refreshToken } = refreshSchema.parse(request.body);
+    if (await rateLimited(reply, [{ name: "refresh-ip", subject: request.ip, ...limits.refreshPerIp }])) {
+      return reply;
+    }
     const tokens = await refreshSession(prisma, refreshToken);
     if (!tokens) {
       return sendError(reply, 401, "INVALID_REFRESH_TOKEN", "refresh token is invalid or expired");

@@ -1,3 +1,4 @@
+import { flushTestRedis } from "../helpers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../../apps/server/src/app";
 import { prisma } from "../../apps/server/src/lib/prisma";
@@ -13,6 +14,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  await flushTestRedis();
   await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();
   await prisma.user.deleteMany();

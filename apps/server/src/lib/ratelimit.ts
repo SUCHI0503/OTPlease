@@ -1,0 +1,63 @@
+import crypto from "node:crypto";
+import type { Redis } from "ioredis";
+
+export interface Rule {
+  /** Short name, part of the Redis key */
+  name: string;
+  /** Who is being limited: an IP, a phone, an application id... */
+  subject: string;
+  limit: number;
+  windowSeconds: number;
+}
+
+export interface LimitResult {
+  limited: boolean;
+  retryAfterSeconds: number;
+}
+
+export interface RateLimits {
+  otpRequestPerPhone: { limit: number; windowSeconds: number };
+  otpRequestPerIp: { limit: number; windowSeconds: number };
+  otpRequestPerApplication: { limit: number; windowSeconds: number };
+  verifyPerPhone: { limit: number; windowSeconds: number };
+  verifyPerIp: { limit: number; windowSeconds: number };
+  refreshPerIp: { limit: number; windowSeconds: number };
+}
+
+export const defaultRateLimits: RateLimits = {
+  // Also the cost guard against SMS pumping: few sends per phone, a hard cap per tenant
+  otpRequestPerPhone: { limit: 3, windowSeconds: 600 },
+  otpRequestPerIp: { limit: 20, windowSeconds: 600 },
+  otpRequestPerApplication: { limit: 1000, windowSeconds: 3600 },
+  // Brute-force guard. Requesting a fresh OTP resets the per-code attempts,
+  // so this per-phone cap is what really stops code guessing.
+  verifyPerPhone: { limit: 10, windowSeconds: 600 },
+  verifyPerIp: { limit: 30, windowSeconds: 600 },
+  refreshPerIp: { limit: 30, windowSeconds: 60 },
+};
+
+// Atomic fixed-window counter: INCR, start the window on the first hit, return count and TTL.
+const SCRIPT = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+return {count, redis.call('TTL', KEYS[1])}
+`;
+
+// Subjects can be phone numbers, so they are hashed before they reach Redis keys.
+const keyFor = (rule: Rule) =>
+  `rl:${rule.name}:${crypto.createHash("sha256").update(rule.subject).digest("hex").slice(0, 32)}`;
+
+/** Counts one hit against every rule. Limited if any rule is over its limit. */
+export async function checkRateLimits(redis: Redis, rules: Rule[]): Promise<LimitResult> {
+  let retryAfterSeconds = 0;
+  for (const rule of rules) {
+    const [count, ttl] = (await redis.eval(
+      SCRIPT,
+      1,
+      keyFor(rule),
+      rule.windowSeconds
+    )) as [number, number];
+    if (count > rule.limit) retryAfterSeconds = Math.max(retryAfterSeconds, ttl > 0 ? ttl : rule.windowSeconds);
+  }
+  return { limited: retryAfterSeconds > 0, retryAfterSeconds };
+}

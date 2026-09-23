@@ -17,6 +17,7 @@
   "dependencies": {
     "@prisma/client": "^6.19.3",
     "fastify": "^5.12.5",
+    "ioredis": "^6.0.0",
     "jose": "^6.2.12",
     "libphonenumber-js": "^1.13.13",
     "nodemailer": "^10.0.10",
