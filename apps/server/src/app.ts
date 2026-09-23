@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "./lib/prisma";
 import { tenantUsers } from "./lib/tenant";
 import { registerErrorHandler, sendError } from "./lib/errors";
-import { buildProviders, type ProviderRegistry } from "./providers";
+import { createOtpQueue, enqueueOtp } from "./queue/otp-queue";
 import type { Redis } from "ioredis";
 import { createRedis } from "./lib/redis";
 import { checkRateLimits, defaultRateLimits, type RateLimits, type Rule } from "./lib/ratelimit";
@@ -22,14 +22,13 @@ import {
 export function buildApp(
   options: {
     logger?: boolean;
-    providers?: ProviderRegistry;
     redis?: Redis;
     limits?: Partial<RateLimits>;
   } = {}
 ) {
   const redis = options.redis ?? createRedis();
   const limits: RateLimits = { ...defaultRateLimits, ...options.limits };
-  const providers = options.providers ?? buildProviders();
+  const otpQueue = createOtpQueue();
   const app = Fastify({
     logger: (options.logger ?? true)
       ? { redact: ["req.headers.authorization", "*.phone", "*.code"] }
@@ -39,6 +38,7 @@ export function buildApp(
   registerErrorHandler(app);
 
   app.addHook("onClose", async () => {
+    await otpQueue.close();
     await prisma.$disconnect();
     if (!options.redis) redis.disconnect();
   });
@@ -156,8 +156,8 @@ export function buildApp(
       }),
     ]);
 
-    // Deliver the code through the chosen provider. It must never be logged.
-    await providers[channel].send({ channel, to: channel === "email" ? email! : phone, code });
+    // Hand delivery to the worker so the API replies immediately. The code must never be logged.
+    await enqueueOtp(otpQueue, { channel, to: channel === "email" ? email! : phone, code });
 
     return reply.status(202).send({ status: "otp_request_accepted", userId: user.id });
   });

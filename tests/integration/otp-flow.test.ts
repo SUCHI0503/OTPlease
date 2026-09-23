@@ -1,11 +1,12 @@
-import { flushTestRedis } from "../helpers";
+import { flushTestRedis, startTestWorker, waitForOutbox } from "../helpers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../../apps/server/src/app";
 import { prisma } from "../../apps/server/src/lib/prisma";
 import { MockProvider } from "../../apps/server/src/providers";
 
 const mock = new MockProvider();
-const app = buildApp({ logger: false, providers: { sms: mock, email: mock } });
+const worker = startTestWorker(mock);
+const app = buildApp({ logger: false });
 const PHONE = "+919876543210";
 
 beforeAll(async () => {
@@ -25,6 +26,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  await worker.close();
   await app.close();
 });
 
@@ -40,6 +42,7 @@ describe("request -> verify flow with the mock provider (Phase 6)", () => {
     const id = await createApplication();
     const reqRes = await post(`/applications/${id}/otp/request`, { phone: PHONE });
     expect(reqRes.statusCode).toBe(202);
+    await waitForOutbox(mock, 1);
     expect(mock.outbox).toHaveLength(1);
     expect(mock.outbox[0]).toMatchObject({ channel: "sms", to: PHONE });
 
@@ -52,6 +55,7 @@ describe("request -> verify flow with the mock provider (Phase 6)", () => {
   it("sends via the email channel to the given address", async () => {
     const id = await createApplication();
     await post(`/applications/${id}/otp/request`, { phone: PHONE, channel: "email", email: "A@Example.com" });
+    await waitForOutbox(mock, 1);
     expect(mock.outbox[0]).toMatchObject({ channel: "email", to: "a@example.com" });
 
     const verifyRes = await post(`/applications/${id}/otp/verify`, { phone: PHONE, code: mock.outbox[0]!.code });
@@ -68,13 +72,16 @@ describe("request -> verify flow with the mock provider (Phase 6)", () => {
   it("does not put the code in the request response", async () => {
     const id = await createApplication();
     const res = await post(`/applications/${id}/otp/request`, { phone: PHONE });
+    await waitForOutbox(mock, 1);
     expect(res.body).not.toContain(mock.outbox[0]!.code);
   });
 
   it("only the newest code works after two requests", async () => {
     const id = await createApplication();
     await post(`/applications/${id}/otp/request`, { phone: PHONE });
+    await waitForOutbox(mock, 1);
     await post(`/applications/${id}/otp/request`, { phone: PHONE });
+    await waitForOutbox(mock, 2);
     const [first, second] = mock.outbox.map((m) => m.code);
     if (first !== second) {
       expect((await post(`/applications/${id}/otp/verify`, { phone: PHONE, code: first })).statusCode).toBe(400);

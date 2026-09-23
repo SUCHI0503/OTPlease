@@ -2,13 +2,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../../apps/server/src/app";
 import { prisma } from "../../apps/server/src/lib/prisma";
 import { MockProvider } from "../../apps/server/src/providers";
-import { flushTestRedis } from "../helpers";
+import { flushTestRedis, startTestWorker, waitForOutbox } from "../helpers";
 
 const mock = new MockProvider();
+const worker = startTestWorker(mock);
 const app = buildApp({
   logger: false,
-  providers: { sms: mock, email: mock },
-  limits: {
+    limits: {
     otpRequestPerPhone: { limit: 3, windowSeconds: 600 },
     otpRequestPerIp: { limit: 6, windowSeconds: 600 },
     otpRequestPerApplication: { limit: 100, windowSeconds: 3600 },
@@ -35,6 +35,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  await worker.close();
   await app.close();
 });
 
@@ -57,6 +58,8 @@ describe("rate limiting and abuse protection (Phase 8)", () => {
     expect(statuses).toEqual([202, 202, 202, 429, 429]);
     expect(last!.json().error.code).toBe("RATE_LIMITED");
     expect(Number(last!.headers["retry-after"])).toBeGreaterThan(0);
+    await waitForOutbox(mock, 3);
+    await new Promise((r) => setTimeout(r, 200));
     expect(mock.outbox).toHaveLength(3);
   });
 
@@ -74,8 +77,7 @@ describe("rate limiting and abuse protection (Phase 8)", () => {
   it("limits one tenant's total sends (spending cap)", async () => {
     const capped = buildApp({
       logger: false,
-      providers: { sms: mock, email: mock },
-      limits: { otpRequestPerApplication: { limit: 2, windowSeconds: 3600 } },
+            limits: { otpRequestPerApplication: { limit: 2, windowSeconds: 3600 } },
     });
     await capped.ready();
     const created = await capped.inject({ method: "POST", url: "/applications", payload: { name: "Cap" } });
@@ -92,6 +94,7 @@ describe("rate limiting and abuse protection (Phase 8)", () => {
   it("stops brute-force guessing even when the attacker keeps requesting fresh codes", async () => {
     const id = await createApplication();
     await post(`/applications/${id}/otp/request`, { phone: "+919876543210" });
+    await waitForOutbox(mock, 1);
     const statuses: number[] = [];
     for (let i = 0; i < 6; i++) {
       const res = await post(`/applications/${id}/otp/verify`, { phone: "+919876543210", code: "000000" });

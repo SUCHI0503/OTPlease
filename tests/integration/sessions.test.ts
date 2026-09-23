@@ -1,11 +1,12 @@
-import { flushTestRedis } from "../helpers";
+import { flushTestRedis, startTestWorker, waitForOutbox } from "../helpers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../../apps/server/src/app";
 import { prisma } from "../../apps/server/src/lib/prisma";
 import { MockProvider } from "../../apps/server/src/providers";
 
 const mock = new MockProvider();
-const app = buildApp({ logger: false, providers: { sms: mock, email: mock } });
+const worker = startTestWorker(mock);
+const app = buildApp({ logger: false });
 const PHONE = "+919876543210";
 
 beforeAll(async () => {
@@ -25,6 +26,7 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  await worker.close();
   await app.close();
 });
 
@@ -36,6 +38,7 @@ async function login() {
   const created = await post("/applications", { name: "Zomato" });
   const id = (created.json() as { id: string }).id;
   await post(`/applications/${id}/otp/request`, { phone: PHONE });
+  await waitForOutbox(mock, 1);
   const res = await post(`/applications/${id}/otp/verify`, { phone: PHONE, code: mock.lastCodeFor(PHONE) });
   return { applicationId: id, ...(res.json() as { userId: string; accessToken: string; refreshToken: string }) };
 }

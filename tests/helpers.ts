@@ -10,3 +10,22 @@ export async function flushTestRedis(): Promise<void> {
   await redis.flushdb();
   redis.disconnect();
 }
+
+import { createOtpWorker } from "../apps/worker/src/otp-worker";
+import type { MockProvider } from "../apps/server/src/providers";
+
+/** Starts the real worker, wired to the mock provider so no real message is ever sent. */
+export function startTestWorker(mock: MockProvider) {
+  return createOtpWorker({ sms: mock, email: mock });
+}
+
+export async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 5000) {
+  const start = Date.now();
+  while (!(await condition())) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor timed out");
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+export const waitForOutbox = (mock: MockProvider, count: number) =>
+  waitFor(() => mock.outbox.length >= count);
