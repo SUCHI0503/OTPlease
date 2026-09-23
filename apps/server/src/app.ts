@@ -9,6 +9,8 @@ import { parsePhoneNumberFromString } from "libphonenumber-js";
 import { maskRecipient } from "./lib/mask";
 import { isValidTwilioSignature } from "./providers/twilio";
 import { isAdminToken, issueApiKey, verifyApiKey, type Scope } from "./lib/apikeys";
+import { DOCS_HTML, buildOpenApiDocument } from "./openapi";
+import { getAppAnalytics, getOverview } from "./lib/analytics";
 import { createWebhookEmitter, createWebhookQueue } from "./queue/webhook-queue";
 import { encrypt } from "./lib/secretbox";
 import { validateWebhookUrl } from "./lib/webhook-http";
@@ -21,6 +23,7 @@ import { generateOtpCode, hashOtpCode, verifyOtpCode } from "./lib/otp";
 import {
   applicationParamsSchema,
   deliveryParamsSchema,
+  analyticsQuerySchema,
   apiKeyParamsSchema,
   createApiKeySchema,
   createWebhookSchema,
@@ -32,6 +35,13 @@ import {
   refreshSchema,
   userParamsSchema,
 } from "./lib/schemas";
+
+declare module "fastify" {
+  interface FastifyInstance {
+    /** Every route registered on this app, so tests can check the API docs cover them all */
+    registeredRoutes: { method: string; url: string }[];
+  }
+}
 
 export function buildApp(
   options: {
@@ -53,6 +63,12 @@ export function buildApp(
     logger: (options.logger ?? true)
       ? { redact: ["req.headers.authorization", "*.phone", "*.code"] }
       : false,
+  });
+
+  const registeredRoutes: { method: string; url: string }[] = [];
+  app.decorate("registeredRoutes", registeredRoutes);
+  app.addHook("onRoute", (route) => {
+    for (const method of [route.method].flat()) registeredRoutes.push({ method: String(method), url: route.url });
   });
 
   registerErrorHandler(app);
@@ -103,6 +119,10 @@ export function buildApp(
     sendError(reply, 401, "INVALID_ADMIN_TOKEN", "missing or invalid admin token");
     return false;
   }
+
+  const openApiDocument = buildOpenApiDocument();
+  app.get("/openapi.json", async () => openApiDocument);
+  app.get("/docs", async (_request, reply) => reply.type("text/html").send(DOCS_HTML));
 
   app.get("/health", async () => ({ status: "ok", service: "otplease-server" }));
 
@@ -159,6 +179,30 @@ export function buildApp(
     });
     if (revoked.count === 0) return sendError(reply, 404, "API_KEY_NOT_FOUND", "api key not found");
     return reply.status(204).send();
+  });
+
+  // ---------- Analytics ----------
+  app.get("/analytics/overview", async (request, reply) => {
+    if (!authorizeAdmin(request, reply)) return reply;
+    const { days } = analyticsQuerySchema.parse(request.query);
+    return getOverview(prisma, days);
+  });
+
+  app.get("/applications/:applicationId", async (request, reply) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "analytics:read", applicationId, allowAdmin: true }))) return reply;
+    const application = await prisma.application.findUnique({ where: { id: applicationId } });
+    if (!application) return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
+    return application;
+  });
+
+  app.get("/applications/:applicationId/analytics", async (request, reply) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "analytics:read", applicationId, allowAdmin: true }))) return reply;
+    const { days } = analyticsQuerySchema.parse(request.query);
+    const application = await prisma.application.findUnique({ where: { id: applicationId } });
+    if (!application) return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
+    return getAppAnalytics(prisma, applicationId, days);
   });
 
   // ---------- Webhooks ----------

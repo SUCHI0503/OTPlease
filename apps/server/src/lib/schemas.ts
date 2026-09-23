@@ -79,3 +79,7 @@ export const createWebhookSchema = z.object({
 export const webhookParamsSchema = applicationParamsSchema.extend({
   webhookId: z.string().uuid("webhookId must be a valid id"),
 });
+
+export const analyticsQuerySchema = z.object({
+  days: z.coerce.number().int().min(1, "days must be at least 1").max(30, "days can be at most 30").default(7),
+});

@@ -10,6 +10,7 @@ export const SCOPES = [
   "deliveries:read",
   "keys:manage",
   "webhooks:manage",
+  "analytics:read",
 ] as const;
 export type Scope = (typeof SCOPES)[number];
 
