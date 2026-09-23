@@ -12,6 +12,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  await prisma.otpCode.deleteMany();
   await prisma.user.deleteMany();
   await prisma.application.deleteMany();
 });
@@ -75,7 +76,7 @@ describe("otp routes (shape only, Phase 4)", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("returns not-implemented for verify when the user exists (real check comes in Phase 5)", async () => {
+  it("rejects verify with a wrong code when the user exists", async () => {
     const zomato = await createApplication("Zomato");
     await app.inject({
       method: "POST",
@@ -86,9 +87,10 @@ describe("otp routes (shape only, Phase 4)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/applications/${zomato.id}/otp/verify`,
-      payload: { phone: "+919876543210", code: "123456" },
+      payload: { phone: "+919876543210", code: "000000" },
     });
 
-    expect(res.statusCode).toBe(501);
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("OTP_INCORRECT");
   });
 });

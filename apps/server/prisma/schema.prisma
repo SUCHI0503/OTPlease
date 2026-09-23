@@ -20,6 +20,22 @@ model User {
   application   Application @relation(fields: [applicationId], references: [id])
   phone         String
   createdAt     DateTime    @default(now())
+  otpCodes      OtpCode[]
 
   @@unique([applicationId, phone])
+}
+
+model OtpCode {
+  id            String      @id @default(uuid())
+  applicationId String
+  userId        String
+  user          User        @relation(fields: [userId], references: [id])
+  codeHash      String
+  expiresAt     DateTime
+  attempts      Int         @default(0)
+  maxAttempts   Int         @default(5)
+  consumedAt    DateTime?
+  createdAt     DateTime    @default(now())
+
+  @@index([userId, consumedAt])
 }
