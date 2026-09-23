@@ -1,4 +1,4 @@
-import Fastify, { type FastifyReply } from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./lib/prisma";
 import { tenantUsers } from "./lib/tenant";
@@ -7,6 +7,7 @@ import { registerErrorHandler, sendError } from "./lib/errors";
 import { parsePhoneNumberFromString } from "libphonenumber-js";
 import { maskRecipient } from "./lib/mask";
 import { isValidTwilioSignature } from "./providers/twilio";
+import { isAdminToken, issueApiKey, verifyApiKey, type Scope } from "./lib/apikeys";
 import { createOtpQueue, enqueueOtp } from "./queue/otp-queue";
 import type { Redis } from "ioredis";
 import { createRedis } from "./lib/redis";
@@ -16,6 +17,8 @@ import { generateOtpCode, hashOtpCode, verifyOtpCode } from "./lib/otp";
 import {
   applicationParamsSchema,
   deliveryParamsSchema,
+  apiKeyParamsSchema,
+  createApiKeySchema,
   createApplicationSchema,
   createUserSchema,
   otpRequestSchema,
@@ -61,22 +64,95 @@ export function buildApp(
     return true;
   }
 
+  // Sends 401/403 and returns false unless the caller may use `scope` on this application.
+  // The key must belong to the application in the URL, so one tenant's key never works on another.
+  async function authorize(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    opts: { scope: Scope; applicationId: string; allowAdmin?: boolean }
+  ): Promise<boolean> {
+    const adminHeader = request.headers["x-admin-token"] as string | undefined;
+    if (opts.allowAdmin && adminHeader && isAdminToken(adminHeader)) return true;
+
+    const auth = await verifyApiKey(prisma, request.headers["x-api-key"] as string | undefined);
+    if (!auth) {
+      sendError(reply, 401, "INVALID_API_KEY", "missing, invalid or revoked API key");
+      return false;
+    }
+    if (auth.applicationId !== opts.applicationId || !auth.scopes.includes(opts.scope)) {
+      sendError(reply, 403, "FORBIDDEN", "this API key cannot perform this action");
+      return false;
+    }
+    return true;
+  }
+
+  function authorizeAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
+    if (isAdminToken(request.headers["x-admin-token"] as string | undefined)) return true;
+    sendError(reply, 401, "INVALID_ADMIN_TOKEN", "missing or invalid admin token");
+    return false;
+  }
+
   app.get("/health", async () => ({ status: "ok", service: "otplease-server" }));
 
   // ---------- Applications (tenants) ----------
   app.post("/applications", async (request, reply) => {
+    if (!authorizeAdmin(request, reply)) return reply;
     const { name } = createApplicationSchema.parse(request.body);
     const application = await prisma.application.create({ data: { name } });
     return reply.status(201).send(application);
   });
 
-  app.get("/applications", async () => {
+  app.get("/applications", async (request, reply) => {
+    if (!authorizeAdmin(request, reply)) return reply;
     return prisma.application.findMany({ orderBy: { createdAt: "desc" } });
+  });
+
+  // ---------- API keys ----------
+  app.post("/applications/:applicationId/api-keys", async (request, reply) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "keys:manage", applicationId, allowAdmin: true }))) return reply;
+    const { name, scopes } = createApiKeySchema.parse(request.body);
+
+    const application = await prisma.application.findUnique({ where: { id: applicationId } });
+    if (!application) return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
+
+    const { key, record } = await issueApiKey(prisma, applicationId, name, scopes);
+    // The full key is shown exactly once; only its hash is stored
+    return reply.status(201).send({
+      id: record.id,
+      name: record.name,
+      prefix: record.prefix,
+      scopes: record.scopes,
+      createdAt: record.createdAt,
+      key,
+    });
+  });
+
+  app.get("/applications/:applicationId/api-keys", async (request, reply) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "keys:manage", applicationId, allowAdmin: true }))) return reply;
+    return prisma.apiKey.findMany({
+      where: { applicationId },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, name: true, prefix: true, scopes: true, createdAt: true, lastUsedAt: true, revokedAt: true },
+    });
+  });
+
+  app.delete("/applications/:applicationId/api-keys/:keyId", async (request, reply) => {
+    const { applicationId, keyId } = apiKeyParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "keys:manage", applicationId, allowAdmin: true }))) return reply;
+    const revoked = await prisma.apiKey.updateMany({
+      where: { id: keyId, applicationId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    if (revoked.count === 0) return sendError(reply, 404, "API_KEY_NOT_FOUND", "api key not found");
+    return reply.status(204).send();
   });
 
   // ---------- Users (always inside one application) ----------
   app.post("/applications/:applicationId/users", async (request, reply) => {
     const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "users:write", applicationId }))) return reply;
     const { phone } = createUserSchema.parse(request.body);
 
     const application = await prisma.application.findUnique({ where: { id: applicationId } });
@@ -100,13 +176,15 @@ export function buildApp(
     }
   });
 
-  app.get("/applications/:applicationId/users", async (request) => {
+  app.get("/applications/:applicationId/users", async (request, reply) => {
     const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "users:read", applicationId }))) return reply;
     return tenantUsers(prisma, applicationId).list();
   });
 
   app.get("/applications/:applicationId/users/:userId", async (request, reply) => {
     const { applicationId, userId } = userParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "users:read", applicationId }))) return reply;
     const user = await tenantUsers(prisma, applicationId).findById(userId);
     if (!user) {
       return sendError(reply, 404, "USER_NOT_FOUND", "user not found");
@@ -120,6 +198,7 @@ export function buildApp(
 
   app.post("/applications/:applicationId/otp/request", async (request, reply) => {
     const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "otp:request", applicationId }))) return reply;
     const { phone, channel, email, fallback } = otpRequestSchema.parse(request.body);
 
     if (
@@ -180,6 +259,7 @@ export function buildApp(
 
   app.post("/applications/:applicationId/otp/verify", async (request, reply) => {
     const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "otp:verify", applicationId }))) return reply;
     const { phone, code } = otpVerifySchema.parse(request.body);
 
     if (
@@ -239,6 +319,7 @@ export function buildApp(
   // ---------- Delivery status ----------
   app.get("/applications/:applicationId/deliveries/:deliveryId", async (request, reply) => {
     const { applicationId, deliveryId } = deliveryParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "deliveries:read", applicationId }))) return reply;
     const delivery = await prisma.delivery.findFirst({ where: { id: deliveryId, applicationId } });
     if (!delivery) return sendError(reply, 404, "DELIVERY_NOT_FOUND", "delivery not found");
     const { providerMessageId: _hidden, ...safe } = delivery;

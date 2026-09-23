@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { normalizePhone } from "./phone";
+import { SCOPES } from "./apikeys";
 
 export const createApplicationSchema = z.object({
   name: z.string().trim().min(1, "name is required").max(100, "name is too long"),
@@ -58,4 +59,13 @@ export const refreshSchema = z.object({
 
 export const deliveryParamsSchema = applicationParamsSchema.extend({
   deliveryId: z.string().uuid("deliveryId must be a valid id"),
+});
+
+export const createApiKeySchema = z.object({
+  name: z.string().trim().min(1, "name is required").max(100, "name is too long"),
+  scopes: z.array(z.enum(SCOPES)).min(1, "at least one scope is required"),
+});
+
+export const apiKeyParamsSchema = applicationParamsSchema.extend({
+  keyId: z.string().uuid("keyId must be a valid id"),
 });

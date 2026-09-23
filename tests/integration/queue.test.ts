@@ -1,14 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Redis } from "ioredis";
-import { buildApp } from "../../apps/server/src/app";
 import { prisma } from "../../apps/server/src/lib/prisma";
 import { MockProvider } from "../../apps/server/src/providers";
 import type { OtpMessage } from "../../apps/server/src/providers";
 import { createOtpWorker } from "../../apps/worker/src/otp-worker";
-import { flushTestRedis, waitFor } from "../helpers";
+import { flushTestRedis, waitFor, buildTestApp } from "../helpers";
 
 const PHONE = "+919876543210";
-const app = buildApp({ logger: false });
+const app = buildTestApp({ logger: false });
 
 // A provider that is slow, and can be told to fail a number of times first
 class SlowFlakyProvider extends MockProvider {
@@ -40,6 +39,7 @@ beforeEach(async () => {
   provider.outbox.length = 0;
   provider.failuresLeft = 0;
   provider.calls = 0;
+  await prisma.apiKey.deleteMany();
   await prisma.delivery.deleteMany();
   await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();

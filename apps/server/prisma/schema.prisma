@@ -73,3 +73,17 @@ model Delivery {
   @@index([applicationId])
   @@index([providerMessageId])
 }
+
+model ApiKey {
+  id            String    @id @default(uuid())
+  applicationId String
+  name          String
+  prefix        String    @unique
+  keyHash       String
+  scopes        String[]
+  createdAt     DateTime  @default(now())
+  lastUsedAt    DateTime?
+  revokedAt     DateTime?
+
+  @@index([applicationId])
+}

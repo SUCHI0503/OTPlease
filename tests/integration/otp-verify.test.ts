@@ -1,10 +1,9 @@
-import { flushTestRedis } from "../helpers";
+import { flushTestRedis, buildTestApp } from "../helpers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { buildApp } from "../../apps/server/src/app";
 import { prisma } from "../../apps/server/src/lib/prisma";
 import { hashOtpCode } from "../../apps/server/src/lib/otp";
 
-const app = buildApp({ logger: false });
+const app = buildTestApp({ logger: false });
 
 beforeAll(async () => {
   if (!process.env.DATABASE_URL?.includes("otplease_test")) {
@@ -15,6 +14,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await flushTestRedis();
+  await prisma.apiKey.deleteMany();
   await prisma.delivery.deleteMany();
   await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();

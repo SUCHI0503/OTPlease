@@ -1,12 +1,11 @@
-import { flushTestRedis, startTestWorker, waitForOutbox } from "../helpers";
+import { flushTestRedis, startTestWorker, waitForOutbox, buildTestApp } from "../helpers";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { buildApp } from "../../apps/server/src/app";
 import { prisma } from "../../apps/server/src/lib/prisma";
 import { MockProvider } from "../../apps/server/src/providers";
 
 const mock = new MockProvider();
 const worker = startTestWorker(mock);
-const app = buildApp({ logger: false });
+const app = buildTestApp({ logger: false });
 const PHONE = "+919876543210";
 
 beforeAll(async () => {
@@ -19,6 +18,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   await flushTestRedis();
   mock.outbox.length = 0;
+  await prisma.apiKey.deleteMany();
   await prisma.delivery.deleteMany();
   await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();

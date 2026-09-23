@@ -1,10 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import crypto from "node:crypto";
-import { buildApp } from "../../apps/server/src/app";
 import { prisma } from "../../apps/server/src/lib/prisma";
 import { MockProvider, type OtpMessage, type ProviderRegistry } from "../../apps/server/src/providers";
 import { createOtpWorker } from "../../apps/worker/src/otp-worker";
-import { flushTestRedis, waitFor } from "../helpers";
+import { flushTestRedis, waitFor, buildTestApp } from "../helpers";
 
 const PHONE = "+919876543210";
 
@@ -20,7 +19,7 @@ class ChannelMock extends MockProvider {
 const mock = new ChannelMock();
 const providers: ProviderRegistry = { sms: mock, whatsapp: mock, voice: mock, email: mock };
 const worker = createOtpWorker(providers);
-const app = buildApp({ logger: false, queue: { attempts: 2, backoffMs: 50 } });
+const app = buildTestApp({ logger: false, queue: { attempts: 2, backoffMs: 50 } });
 
 beforeAll(async () => {
   if (!process.env.DATABASE_URL?.includes("otplease_test")) {
@@ -33,6 +32,7 @@ beforeEach(async () => {
   await flushTestRedis();
   mock.outbox.length = 0;
   mock.failing.clear();
+  await prisma.apiKey.deleteMany();
   await prisma.delivery.deleteMany();
   await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();

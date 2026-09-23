@@ -1,12 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { buildApp } from "../../apps/server/src/app";
 import { prisma } from "../../apps/server/src/lib/prisma";
 import { MockProvider } from "../../apps/server/src/providers";
-import { flushTestRedis, startTestWorker, waitForOutbox } from "../helpers";
+import { flushTestRedis, startTestWorker, waitForOutbox, buildTestApp } from "../helpers";
 
 const mock = new MockProvider();
 const worker = startTestWorker(mock);
-const app = buildApp({
+const app = buildTestApp({
   logger: false,
     limits: {
     otpRequestPerPhone: { limit: 3, windowSeconds: 600 },
@@ -28,6 +27,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   mock.outbox.length = 0;
   await flushTestRedis();
+  await prisma.apiKey.deleteMany();
   await prisma.delivery.deleteMany();
   await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();
@@ -76,7 +76,7 @@ describe("rate limiting and abuse protection (Phase 8)", () => {
   });
 
   it("limits sends into one country across phones and tenants", async () => {
-    const capped = buildApp({ logger: false, limits: { otpRequestPerCountry: { limit: 2, windowSeconds: 3600 } } });
+    const capped = buildTestApp({ logger: false, limits: { otpRequestPerCountry: { limit: 2, windowSeconds: 3600 } } });
     await capped.ready();
     const codes: number[] = [];
     for (const [i, phone] of ["+919876543210", "+919876543211", "+919876543212", "+14155552671"].entries()) {
@@ -90,7 +90,7 @@ describe("rate limiting and abuse protection (Phase 8)", () => {
   });
 
   it("limits one tenant's total sends (spending cap)", async () => {
-    const capped = buildApp({
+    const capped = buildTestApp({
       logger: false,
             limits: { otpRequestPerApplication: { limit: 2, windowSeconds: 3600 } },
     });
