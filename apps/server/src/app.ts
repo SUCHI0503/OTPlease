@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "./lib/prisma";
 import { tenantUsers } from "./lib/tenant";
 import { registerErrorHandler, sendError } from "./lib/errors";
+import { buildProviders, type ProviderRegistry } from "./providers";
 import { generateOtpCode, hashOtpCode, verifyOtpCode } from "./lib/otp";
 import {
   applicationParamsSchema,
@@ -13,7 +14,8 @@ import {
   userParamsSchema,
 } from "./lib/schemas";
 
-export function buildApp(options: { logger?: boolean } = {}) {
+export function buildApp(options: { logger?: boolean; providers?: ProviderRegistry } = {}) {
+  const providers = options.providers ?? buildProviders();
   const app = Fastify({
     logger: (options.logger ?? true)
       ? { redact: ["req.headers.authorization", "*.phone", "*.code"] }
@@ -85,7 +87,7 @@ export function buildApp(options: { logger?: boolean } = {}) {
 
   app.post("/applications/:applicationId/otp/request", async (request, reply) => {
     const { applicationId } = applicationParamsSchema.parse(request.params);
-    const { phone } = otpRequestSchema.parse(request.body);
+    const { phone, channel, email } = otpRequestSchema.parse(request.body);
 
     const application = await prisma.application.findUnique({ where: { id: applicationId } });
     if (!application) {
@@ -117,7 +119,8 @@ export function buildApp(options: { logger?: boolean } = {}) {
       }),
     ]);
 
-    // TODO(Phase 6): hand `code` to the mock/email provider. It must never be logged.
+    // Deliver the code through the chosen provider. It must never be logged.
+    await providers[channel].send({ channel, to: channel === "email" ? email! : phone, code });
 
     return reply.status(202).send({ status: "otp_request_accepted", userId: user.id });
   });

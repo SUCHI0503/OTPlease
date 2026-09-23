@@ -31,9 +31,16 @@ export const userParamsSchema = applicationParamsSchema.extend({
   userId: z.string().uuid("userId must be a valid id"),
 });
 
-export const otpRequestSchema = z.object({
-  phone: phoneSchema,
-});
+export const otpRequestSchema = z
+  .object({
+    phone: phoneSchema,
+    channel: z.enum(["sms", "email"]).default("sms"),
+    email: z.string().trim().toLowerCase().email("invalid email address").optional(),
+  })
+  .refine((v) => v.channel !== "email" || v.email, {
+    path: ["email"],
+    message: "email is required when channel is email",
+  });
 
 export const otpVerifySchema = z.object({
   phone: phoneSchema,
