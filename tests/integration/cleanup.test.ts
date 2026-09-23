@@ -43,8 +43,14 @@ describe("cleanup job", () => {
     await session({}); // live: kept
     await session({ revokedAt: new Date(now.getTime() - HOUR) }); // revoked recently: kept
 
+    await prisma.delivery.create({
+      data: { applicationId: app.id, requestedChannel: "sms", toMasked: "x", createdAt: new Date(now.getTime() - 31 * DAY) },
+    });
+    await prisma.delivery.create({ data: { applicationId: app.id, requestedChannel: "sms", toMasked: "x" } });
+
     const result = await runCleanup(prisma, now);
-    expect(result).toEqual({ otps: 2, sessions: 2 });
+    expect(result).toEqual({ otps: 2, sessions: 2, deliveries: 1 });
+    expect(await prisma.delivery.count()).toBe(1);
     expect(await prisma.otpCode.count()).toBe(2);
     expect(await prisma.session.count()).toBe(2);
   });

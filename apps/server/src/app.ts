@@ -224,29 +224,24 @@ export function buildApp(
     }
 
     const users = tenantUsers(prisma, applicationId);
-    const existing = await prisma.user.findFirst({ where: { applicationId, phone } });
-    const user = existing ?? (await users.create(phone));
+    const user = await users.findOrCreate(phone);
 
     const code = generateOtpCode();
     const codeHash = hashOtpCode(code);
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
 
-    // One active code per user: consume any older unused codes, then issue the new one.
-    await prisma.$transaction([
-      prisma.otpCode.updateMany({
+    // One active code per user. The advisory lock makes concurrent requests for the
+    // same user take turns, so the "consume old, create new" step cannot interleave.
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${user.id}))`;
+      await tx.otpCode.updateMany({
         where: { userId: user.id, consumedAt: null },
         data: { consumedAt: new Date() },
-      }),
-      prisma.otpCode.create({
-        data: {
-          applicationId,
-          userId: user.id,
-          codeHash,
-          expiresAt,
-          maxAttempts: OTP_MAX_ATTEMPTS,
-        },
-      }),
-    ]);
+      });
+      await tx.otpCode.create({
+        data: { applicationId, userId: user.id, codeHash, expiresAt, maxAttempts: OTP_MAX_ATTEMPTS },
+      });
+    });
 
     // Hand delivery to the worker so the API replies immediately. The code must never be logged.
     const to = channel === "email" ? email! : phone;

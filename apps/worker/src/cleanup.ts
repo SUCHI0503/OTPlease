@@ -23,7 +23,9 @@ export async function runCleanup(prisma: PrismaClient, now = new Date()) {
       ],
     },
   });
-  return { otps: otps.count, sessions: sessions.count };
+  // Delivery records are only useful for a while, and revoked API keys just clutter the list
+  const deliveries = await prisma.delivery.deleteMany({ where: { createdAt: { lt: new Date(now.getTime() - 30 * DAY) } } });
+  return { otps: otps.count, sessions: sessions.count, deliveries: deliveries.count };
 }
 
 /** Runs cleanup every hour. upsert makes restarting the worker safe (no duplicate schedules). */
@@ -34,7 +36,7 @@ export async function startCleanupSchedule(prisma: PrismaClient, log: (msg: stri
     MAINTENANCE_QUEUE,
     async () => {
       const result = await runCleanup(prisma);
-      log(`cleanup removed ${result.otps} otp codes and ${result.sessions} sessions`);
+      log(`cleanup removed ${result.otps} otp codes, ${result.sessions} sessions, ${result.deliveries} deliveries`);
     },
     { connection: bullConnection() }
   );
