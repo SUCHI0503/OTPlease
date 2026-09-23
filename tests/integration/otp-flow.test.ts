@@ -16,6 +16,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   mock.outbox.length = 0;
+  await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();
   await prisma.user.deleteMany();
   await prisma.application.deleteMany();

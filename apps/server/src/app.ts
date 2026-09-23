@@ -4,6 +4,7 @@ import { prisma } from "./lib/prisma";
 import { tenantUsers } from "./lib/tenant";
 import { registerErrorHandler, sendError } from "./lib/errors";
 import { buildProviders, type ProviderRegistry } from "./providers";
+import { authenticate, createSession, refreshSession, revokeSession } from "./lib/session";
 import { generateOtpCode, hashOtpCode, verifyOtpCode } from "./lib/otp";
 import {
   applicationParamsSchema,
@@ -11,6 +12,7 @@ import {
   createUserSchema,
   otpRequestSchema,
   otpVerifySchema,
+  refreshSchema,
   userParamsSchema,
 } from "./lib/schemas";
 
@@ -170,7 +172,31 @@ export function buildApp(options: { logger?: boolean; providers?: ProviderRegist
       return sendError(reply, 400, "OTP_NOT_FOUND", "no active otp for this user");
     }
 
-    return reply.status(200).send({ status: "verified", userId: user.id });
+    const tokens = await createSession(prisma, applicationId, user.id);
+    return reply.status(200).send({ status: "verified", userId: user.id, ...tokens });
+  });
+
+  // ---------- Sessions ----------
+  app.post("/auth/refresh", async (request, reply) => {
+    const { refreshToken } = refreshSchema.parse(request.body);
+    const tokens = await refreshSession(prisma, refreshToken);
+    if (!tokens) {
+      return sendError(reply, 401, "INVALID_REFRESH_TOKEN", "refresh token is invalid or expired");
+    }
+    return tokens;
+  });
+
+  app.get("/auth/me", async (request, reply) => {
+    const auth = await authenticate(prisma, request.headers.authorization);
+    if (!auth) return sendError(reply, 401, "UNAUTHORIZED", "missing, invalid or revoked token");
+    return { userId: auth.userId, applicationId: auth.applicationId, sessionId: auth.sessionId };
+  });
+
+  app.post("/auth/logout", async (request, reply) => {
+    const auth = await authenticate(prisma, request.headers.authorization);
+    if (!auth) return sendError(reply, 401, "UNAUTHORIZED", "missing, invalid or revoked token");
+    await revokeSession(prisma, auth.sessionId);
+    return reply.status(204).send();
   });
 
   return app;

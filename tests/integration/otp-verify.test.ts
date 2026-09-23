@@ -13,6 +13,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  await prisma.session.deleteMany();
   await prisma.otpCode.deleteMany();
   await prisma.user.deleteMany();
   await prisma.application.deleteMany();

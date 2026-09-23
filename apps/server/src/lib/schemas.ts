@@ -49,3 +49,7 @@ export const otpVerifySchema = z.object({
     .trim()
     .regex(/^\d{6}$/, "code must be 6 digits"),
 });
+
+export const refreshSchema = z.object({
+  refreshToken: z.string({ error: "refreshToken is required" }).min(1, "refreshToken is required"),
+});

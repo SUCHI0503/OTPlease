@@ -21,6 +21,7 @@ model User {
   phone         String
   createdAt     DateTime    @default(now())
   otpCodes      OtpCode[]
+  sessions      Session[]
 
   @@unique([applicationId, phone])
 }
@@ -38,4 +39,20 @@ model OtpCode {
   createdAt     DateTime    @default(now())
 
   @@index([userId, consumedAt])
+}
+
+model Session {
+  id              String    @id @default(uuid())
+  applicationId   String
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  refreshHash     String
+  prevRefreshHash String?
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  lastUsedAt      DateTime  @default(now())
+
+  @@index([userId])
+  @@index([applicationId])
 }
