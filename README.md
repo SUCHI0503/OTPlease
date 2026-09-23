@@ -64,6 +64,13 @@ Tests refuse to run unless `DATABASE_URL` points at `otplease_test` and `REDIS_U
 ## Security notes
 
 - OTP codes are HMAC-hashed, expire, are single use and attempt-limited; codes are encrypted while in the job queue and never logged.
-- API keys, refresh tokens and webhook secrets are stored hashed or encrypted and shown once.
+- API keys, refresh tokens and webhook secrets are stored hashed or encrypted and shown once. Webhook secrets can be rotated.
+- Repeated wrong API keys or admin tokens lock the calling IP out (429). Set `TRUST_PROXY` correctly behind a proxy, or every user shares one IP.
+- The three secrets (`OTP_HASH_SECRET`, `JWT_SECRET`, `ADMIN_TOKEN`) must differ, be at least 32 characters and not look like placeholders, or the server refuses to start.
+- No CORS headers are sent unless `CORS_ORIGINS` lists exact origins. API responses are `no-store`, non-sniffable and non-frameable; request bodies are capped at 64 KB.
+- An audit log records who changed keys, webhooks and risk rules (`GET /audit-logs`, or per application). It never holds secrets, full phone numbers or full URLs.
 - Webhooks are HMAC-signed with a timestamp (replay protection) and blocked from private addresses (SSRF).
 - `WEBHOOK_ALLOW_PRIVATE_URLS` is for local development only; the server refuses to start with it in production.
+- Logs are scrubbed of credentials, codes, tokens and phone numbers, and crash logs omit error messages (database errors can echo values).
+
+The `tests/security` folder holds the attack tests: they are generated from the registered routes, so a new route without authentication or a tenant check fails them automatically.

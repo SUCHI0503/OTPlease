@@ -23,6 +23,8 @@ export interface RateLimits {
   verifyPerPhone: { limit: number; windowSeconds: number };
   verifyPerIp: { limit: number; windowSeconds: number };
   refreshPerIp: { limit: number; windowSeconds: number };
+  /** Failed API-key / admin-token attempts per IP, before that IP is locked out */
+  authFailuresPerIp: { limit: number; windowSeconds: number };
 }
 
 export const defaultRateLimits: RateLimits = {
@@ -37,6 +39,7 @@ export const defaultRateLimits: RateLimits = {
   verifyPerPhone: { limit: 10, windowSeconds: 600 },
   verifyPerIp: { limit: 30, windowSeconds: 600 },
   refreshPerIp: { limit: 30, windowSeconds: 60 },
+  authFailuresPerIp: { limit: 20, windowSeconds: 600 },
 };
 
 // Atomic fixed-window counter: INCR, start the window on the first hit, return count and TTL.
@@ -63,4 +66,11 @@ export async function checkRateLimits(redis: Redis, rules: Rule[]): Promise<Limi
     if (count > rule.limit) retryAfterSeconds = Math.max(retryAfterSeconds, ttl > 0 ? ttl : rule.windowSeconds);
   }
   return { limited: retryAfterSeconds > 0, retryAfterSeconds };
+}
+
+/** Reads a counter without counting a hit. Returns the count and seconds left in the window. */
+export async function peekRateLimit(redis: Redis, rule: Rule): Promise<{ count: number; ttl: number }> {
+  const key = keyFor(rule);
+  const [count, ttl] = await Promise.all([redis.get(key), redis.ttl(key)]);
+  return { count: Number(count ?? 0), ttl: ttl > 0 ? ttl : rule.windowSeconds };
 }

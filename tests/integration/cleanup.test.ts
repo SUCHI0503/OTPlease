@@ -51,7 +51,7 @@ describe("cleanup job", () => {
     await prisma.delivery.create({ data: { applicationId: app.id, requestedChannel: "sms", toMasked: "x" } });
 
     const result = await runCleanup(prisma, now);
-    expect(result).toEqual({ otps: 2, sessions: 2, deliveries: 1, devices: 0, riskDecisions: 0 });
+    expect(result).toEqual({ auditLogs: 0, otps: 2, sessions: 2, deliveries: 1, devices: 0, riskDecisions: 0 });
     expect(await prisma.delivery.count()).toBe(1);
     expect(await prisma.otpCode.count()).toBe(2);
     expect(await prisma.session.count()).toBe(2);

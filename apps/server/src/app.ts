@@ -1,3 +1,5 @@
+import cors from "@fastify/cors";
+import type { Writable } from "node:stream";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./lib/prisma";
@@ -7,6 +9,7 @@ import crypto from "node:crypto";
 import { registerErrorHandler, sendError } from "./lib/errors";
 import { parsePhoneNumberFromString } from "libphonenumber-js";
 import { maskRecipient } from "./lib/mask";
+import { maskIp } from "./lib/intelligence";
 import { isValidTwilioSignature } from "./providers/twilio";
 import { isAdminToken, issueApiKey, verifyApiKey, type Scope } from "./lib/apikeys";
 import { DOCS_HTML, buildOpenApiDocument } from "./openapi";
@@ -19,7 +22,7 @@ import { validateWebhookUrl } from "./lib/webhook-http";
 import { createOtpQueue, enqueueOtp } from "./queue/otp-queue";
 import type { Redis } from "ioredis";
 import { createRedis } from "./lib/redis";
-import { checkRateLimits, defaultRateLimits, type RateLimits, type Rule } from "./lib/ratelimit";
+import { checkRateLimits, defaultRateLimits, peekRateLimit, type RateLimits, type Rule } from "./lib/ratelimit";
 import { authenticate, createSession, refreshSession, revokeSession } from "./lib/session";
 import { generateOtpCode, hashOtpCode, verifyOtpCode } from "./lib/otp";
 import {
@@ -27,6 +30,7 @@ import {
   deliveryParamsSchema,
   analyticsQuerySchema,
   apiKeyParamsSchema,
+  auditLogsQuerySchema,
   riskDecisionsQuerySchema,
   createApiKeySchema,
   createWebhookSchema,
@@ -49,12 +53,17 @@ declare module "fastify" {
 export function buildApp(
   options: {
     logger?: boolean;
+    /** Where logs go (tests capture them to prove no secrets are written) */
+    logStream?: Writable;
     redis?: Redis;
     limits?: Partial<RateLimits>;
     queue?: { attempts?: number; backoffMs?: number };
     /** Set false when several apps share the process (tests), so closing one does not disconnect the shared Prisma client */
     disconnectPrisma?: boolean;
     webhookQueue?: { attempts?: number; backoffMs?: number };
+    /** Overrides TRUST_PROXY / CORS_ORIGINS from the environment (used by tests) */
+    trustProxy?: boolean | number;
+    corsOrigins?: string[];
   } = {}
 ) {
   const redis = options.redis ?? createRedis();
@@ -63,9 +72,36 @@ export function buildApp(
   const webhookQueue = createWebhookQueue(options.webhookQueue);
   const emit = createWebhookEmitter(prisma, webhookQueue);
   const app = Fastify({
-    logger: (options.logger ?? true)
-      ? { redact: ["req.headers.authorization", "*.phone", "*.code"] }
-      : false,
+    // Only honour X-Forwarded-For when explicitly told we sit behind a trusted proxy
+    // A number means "trust this many proxy hops". Fastify supports it at runtime; its typings only list boolean.
+    trustProxy: (options.trustProxy ?? env.TRUST_PROXY) as boolean,
+    // Every JSON body here is tiny; a small cap stops memory-exhaustion attempts early
+    bodyLimit: 64 * 1024,
+    logger:
+      (options.logger ?? true)
+        ? {
+            // Defence in depth: request bodies are never logged, and these are scrubbed even if that changes
+            redact: {
+              paths: [
+                "req.headers.authorization",
+                "req.headers.cookie",
+                'req.headers["x-api-key"]',
+                'req.headers["x-admin-token"]',
+                'req.headers["x-twilio-signature"]',
+                "*.phone",
+                "*.code",
+                "*.email",
+                "*.token",
+                "*.secret",
+                "*.key",
+                "*.accessToken",
+                "*.refreshToken",
+              ],
+              censor: "[redacted]",
+            },
+            ...(options.logStream ? { stream: options.logStream } : {}),
+          }
+        : false,
   });
 
   const registeredRoutes: { method: string; url: string }[] = [];
@@ -75,6 +111,28 @@ export function buildApp(
   });
 
   registerErrorHandler(app);
+
+  // Browsers may only call the API from explicitly listed origins. With none listed no CORS headers are sent
+  // at all, so other sites cannot read responses even if they know an API key.
+  app.register(cors, {
+    origin: (options.corsOrigins ?? env.CORS_ORIGINS).length > 0 ? (options.corsOrigins ?? env.CORS_ORIGINS) : false,
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["content-type", "x-api-key", "x-admin-token", "authorization"],
+    maxAge: 600,
+  });
+
+  const DOCS_CSP =
+    "default-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'";
+  app.addHook("onSend", async (request, reply) => {
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("referrer-policy", "no-referrer");
+    reply.header("x-frame-options", "DENY");
+    const isDocs = request.url === "/docs" || request.url === "/openapi.json";
+    reply.header("content-security-policy", request.url === "/docs" ? DOCS_CSP : "default-src 'none'; frame-ancestors 'none'");
+    // Responses carry tokens and one-time secrets: no cache, anywhere, ever
+    if (!isDocs) reply.header("cache-control", "no-store");
+    if (env.NODE_ENV === "production") reply.header("strict-transport-security", "max-age=31536000; includeSubDomains");
+  });
 
   app.addHook("onClose", async () => {
     await otpQueue.close();
@@ -95,18 +153,80 @@ export function buildApp(
     return true;
   }
 
-  // Sends 401/403 and returns false unless the caller may use `scope` on this application.
+  // ---------- Who is calling, audit trail, and lockout of repeated bad guesses ----------
+  type Actor = { type: "admin" } | { type: "api_key"; id: string } | { type: "system" };
+  const actors = new WeakMap<FastifyRequest, Actor>();
+
+  const failRule = (request: FastifyRequest): Rule => ({
+    name: "auth-fail-ip",
+    subject: request.ip,
+    ...limits.authFailuresPerIp,
+  });
+
+  /** True (and a 429 sent) if this IP has guessed credentials wrongly too many times recently. */
+  async function lockedOut(request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
+    const { count, ttl } = await peekRateLimit(redis, failRule(request));
+    if (count < limits.authFailuresPerIp.limit) return false;
+    reply.header("Retry-After", String(ttl));
+    sendError(reply, 429, "RATE_LIMITED", "too many failed authentication attempts, try again later", {
+      retryAfterSeconds: ttl,
+    });
+    return true;
+  }
+
+  async function recordAuthFailure(request: FastifyRequest): Promise<void> {
+    const result = await checkRateLimits(redis, [failRule(request)]);
+    // Note the moment an IP becomes locked out, once, not on every later attempt
+    const { count } = await peekRateLimit(redis, failRule(request));
+    if (result.limited || count < limits.authFailuresPerIp.limit) return;
+    if (count === limits.authFailuresPerIp.limit) {
+      await audit(request, { action: "auth.lockout", metadata: { failures: count } }, { type: "system" });
+    }
+  }
+
+  /** Writes an audit record. It never throws: failing to log must not fail the action, but it is reported. */
+  async function audit(
+    request: FastifyRequest,
+    entry: { applicationId?: string; action: string; targetType?: string; targetId?: string; metadata?: Record<string, unknown> },
+    actorOverride?: Actor
+  ): Promise<void> {
+    const actor = actorOverride ?? actors.get(request) ?? { type: "system" as const };
+    try {
+      await prisma.auditLog.create({
+        data: {
+          applicationId: entry.applicationId ?? null,
+          actorType: actor.type,
+          actorId: actor.type === "api_key" ? actor.id : null,
+          action: entry.action,
+          targetType: entry.targetType ?? null,
+          targetId: entry.targetId ?? null,
+          ipMasked: maskIp(request.ip),
+          metadata: (entry.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
+        },
+      });
+    } catch (err) {
+      request.log.error({ type: (err as Error).name, action: entry.action }, "could not write audit log");
+    }
+  }
+
+  // Sends 401/403/429 and returns false unless the caller may use `scope` on this application.
   // The key must belong to the application in the URL, so one tenant's key never works on another.
   async function authorize(
     request: FastifyRequest,
     reply: FastifyReply,
     opts: { scope: Scope; applicationId: string; allowAdmin?: boolean }
   ): Promise<boolean> {
+    if (await lockedOut(request, reply)) return false;
+
     const adminHeader = request.headers["x-admin-token"] as string | undefined;
-    if (opts.allowAdmin && adminHeader && isAdminToken(adminHeader)) return true;
+    if (opts.allowAdmin && adminHeader && isAdminToken(adminHeader)) {
+      actors.set(request, { type: "admin" });
+      return true;
+    }
 
     const auth = await verifyApiKey(prisma, request.headers["x-api-key"] as string | undefined);
     if (!auth) {
+      await recordAuthFailure(request);
       sendError(reply, 401, "INVALID_API_KEY", "missing, invalid or revoked API key");
       return false;
     }
@@ -114,11 +234,17 @@ export function buildApp(
       sendError(reply, 403, "FORBIDDEN", "this API key cannot perform this action");
       return false;
     }
+    actors.set(request, { type: "api_key", id: auth.keyId });
     return true;
   }
 
-  function authorizeAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
-    if (isAdminToken(request.headers["x-admin-token"] as string | undefined)) return true;
+  async function authorizeAdmin(request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
+    if (await lockedOut(request, reply)) return false;
+    if (isAdminToken(request.headers["x-admin-token"] as string | undefined)) {
+      actors.set(request, { type: "admin" });
+      return true;
+    }
+    await recordAuthFailure(request);
     sendError(reply, 401, "INVALID_ADMIN_TOKEN", "missing or invalid admin token");
     return false;
   }
@@ -131,14 +257,15 @@ export function buildApp(
 
   // ---------- Applications (tenants) ----------
   app.post("/applications", async (request, reply) => {
-    if (!authorizeAdmin(request, reply)) return reply;
+    if (!(await authorizeAdmin(request, reply))) return reply;
     const { name } = createApplicationSchema.parse(request.body);
     const application = await prisma.application.create({ data: { name } });
+    await audit(request, { applicationId: application.id, action: "application.created", targetType: "application", targetId: application.id });
     return reply.status(201).send(application);
   });
 
   app.get("/applications", async (request, reply) => {
-    if (!authorizeAdmin(request, reply)) return reply;
+    if (!(await authorizeAdmin(request, reply))) return reply;
     return prisma.application.findMany({ orderBy: { createdAt: "desc" } });
   });
 
@@ -152,6 +279,7 @@ export function buildApp(
     if (!application) return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
 
     const { key, record } = await issueApiKey(prisma, applicationId, name, scopes);
+    await audit(request, { applicationId, action: "api_key.created", targetType: "api_key", targetId: record.id, metadata: { name, scopes } });
     // The full key is shown exactly once; only its hash is stored
     return reply.status(201).send({
       id: record.id,
@@ -181,7 +309,25 @@ export function buildApp(
       data: { revokedAt: new Date() },
     });
     if (revoked.count === 0) return sendError(reply, 404, "API_KEY_NOT_FOUND", "api key not found");
+    await audit(request, { applicationId, action: "api_key.revoked", targetType: "api_key", targetId: keyId });
     return reply.status(204).send();
+  });
+
+  // ---------- Audit log ----------
+  const auditSelect = { id: true, applicationId: true, actorType: true, actorId: true, action: true, targetType: true, targetId: true, ipMasked: true, metadata: true, createdAt: true } as const;
+
+  app.get("/applications/:applicationId/audit-logs", async (request, reply) => {
+    const { applicationId } = applicationParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "audit:read", applicationId, allowAdmin: true }))) return reply;
+    const { limit } = auditLogsQuerySchema.parse(request.query);
+    return prisma.auditLog.findMany({ where: { applicationId }, orderBy: { createdAt: "desc" }, take: limit, select: auditSelect });
+  });
+
+  // Operator view, including events that belong to no application (such as lockouts)
+  app.get("/audit-logs", async (request, reply) => {
+    if (!(await authorizeAdmin(request, reply))) return reply;
+    const { limit } = auditLogsQuerySchema.parse(request.query);
+    return prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: limit, select: auditSelect });
   });
 
   // ---------- Risk engine ----------
@@ -199,6 +345,7 @@ export function buildApp(
     const application = await prisma.application.findUnique({ where: { id: applicationId } });
     if (!application) return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
     await saveRiskConfig(prisma, applicationId, config);
+    await audit(request, { applicationId, action: "risk_config.updated", targetType: "risk_config", metadata: { mode: config.mode } });
     return config;
   });
 
@@ -216,7 +363,7 @@ export function buildApp(
 
   // ---------- Analytics ----------
   app.get("/analytics/overview", async (request, reply) => {
-    if (!authorizeAdmin(request, reply)) return reply;
+    if (!(await authorizeAdmin(request, reply))) return reply;
     const { days } = analyticsQuerySchema.parse(request.query);
     return getOverview(prisma, days);
   });
@@ -254,6 +401,8 @@ export function buildApp(
     const endpoint = await prisma.webhookEndpoint.create({
       data: { applicationId, url, events, secretEnc: encrypt(secret) },
     });
+    // Only the host is recorded: the full URL may carry tokens in its path or query
+    await audit(request, { applicationId, action: "webhook.created", targetType: "webhook", targetId: endpoint.id, metadata: { host: new URL(url).host, events } });
     // The signing secret is shown exactly once
     return reply.status(201).send({ id: endpoint.id, url, events, createdAt: endpoint.createdAt, secret });
   });
@@ -276,7 +425,22 @@ export function buildApp(
       data: { revokedAt: new Date() },
     });
     if (revoked.count === 0) return sendError(reply, 404, "WEBHOOK_NOT_FOUND", "webhook not found");
+    await audit(request, { applicationId, action: "webhook.revoked", targetType: "webhook", targetId: webhookId });
     return reply.status(204).send();
+  });
+
+  // Replaces the signing secret at once: deliveries signed with the old one stop verifying.
+  app.post("/applications/:applicationId/webhooks/:webhookId/rotate-secret", async (request, reply) => {
+    const { applicationId, webhookId } = webhookParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "webhooks:manage", applicationId, allowAdmin: true }))) return reply;
+    const secret = `whsec_${crypto.randomBytes(32).toString("base64url")}`;
+    const updated = await prisma.webhookEndpoint.updateMany({
+      where: { id: webhookId, applicationId, revokedAt: null },
+      data: { secretEnc: encrypt(secret) },
+    });
+    if (updated.count === 0) return sendError(reply, 404, "WEBHOOK_NOT_FOUND", "webhook not found");
+    await audit(request, { applicationId, action: "webhook.secret_rotated", targetType: "webhook", targetId: webhookId });
+    return { id: webhookId, secret };
   });
 
   app.get("/applications/:applicationId/webhooks/:webhookId/logs", async (request, reply) => {

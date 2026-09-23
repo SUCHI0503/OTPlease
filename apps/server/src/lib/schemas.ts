@@ -103,3 +103,7 @@ export const analyticsQuerySchema = z.object({
 export const riskDecisionsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
+
+export const auditLogsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1, "limit must be at least 1").max(200, "limit can be at most 200").default(50),
+});

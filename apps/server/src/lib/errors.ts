@@ -28,8 +28,13 @@ export function registerErrorHandler(app: FastifyInstance) {
       return sendError(reply, statusCode, "BAD_REQUEST", (error as Error).message);
     }
 
-    // Our own bugs: log the details, but never show them to the caller
-    request.log.error(error);
+    // Our own bugs: never show details to the caller. In the log we keep the type, code and stack but
+    // not the message: database errors can echo the values being written (phone numbers, hashes).
+    const err = error as Error & { code?: string };
+    request.log.error(
+      { type: err.name, code: err.code, stack: err.stack?.split("\n").slice(1).join("\n") },
+      "unhandled error"
+    );
     return sendError(reply, 500, "INTERNAL_ERROR", "Something went wrong");
   });
 
