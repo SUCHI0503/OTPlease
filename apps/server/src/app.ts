@@ -14,7 +14,11 @@ import {
 } from "./lib/schemas";
 
 export function buildApp(options: { logger?: boolean } = {}) {
-  const app = Fastify({ logger: options.logger ?? true });
+  const app = Fastify({
+    logger: (options.logger ?? true)
+      ? { redact: ["req.headers.authorization", "*.phone", "*.code"] }
+      : false,
+  });
 
   registerErrorHandler(app);
 
@@ -96,19 +100,24 @@ export function buildApp(options: { logger?: boolean } = {}) {
     const codeHash = hashOtpCode(code);
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
 
-    await prisma.otpCode.create({
-      data: {
-        applicationId,
-        userId: user.id,
-        codeHash,
-        expiresAt,
-        maxAttempts: OTP_MAX_ATTEMPTS,
-      },
-    });
+    // One active code per user: consume any older unused codes, then issue the new one.
+    await prisma.$transaction([
+      prisma.otpCode.updateMany({
+        where: { userId: user.id, consumedAt: null },
+        data: { consumedAt: new Date() },
+      }),
+      prisma.otpCode.create({
+        data: {
+          applicationId,
+          userId: user.id,
+          codeHash,
+          expiresAt,
+          maxAttempts: OTP_MAX_ATTEMPTS,
+        },
+      }),
+    ]);
 
-    // No real provider until Phase 6 — log the plain code so you can test locally.
-    // Never log this in production; Phase 16 hardening will strip this.
-    app.log.info({ userId: user.id, code }, "OTP code generated (dev only)");
+    // TODO(Phase 6): hand `code` to the mock/email provider. It must never be logged.
 
     return reply.status(202).send({ status: "otp_request_accepted", userId: user.id });
   });
@@ -117,17 +126,17 @@ export function buildApp(options: { logger?: boolean } = {}) {
     const { applicationId } = applicationParamsSchema.parse(request.params);
     const { phone, code } = otpVerifySchema.parse(request.body);
 
+    // Unknown phone and "no active code" return the same error, so callers
+    // cannot probe which phone numbers are registered.
     const user = await prisma.user.findFirst({ where: { applicationId, phone } });
-    if (!user) {
-      return sendError(reply, 404, "USER_NOT_FOUND", "user not found");
-    }
+    const otp = user
+      ? await prisma.otpCode.findFirst({
+          where: { userId: user.id, consumedAt: null },
+          orderBy: { createdAt: "desc" },
+        })
+      : null;
 
-    const otp = await prisma.otpCode.findFirst({
-      where: { userId: user.id, consumedAt: null },
-      orderBy: { createdAt: "desc" },
-    });
-
-    if (!otp) {
+    if (!user || !otp) {
       return sendError(reply, 400, "OTP_NOT_FOUND", "no active otp for this user");
     }
 
@@ -135,24 +144,28 @@ export function buildApp(options: { logger?: boolean } = {}) {
       return sendError(reply, 400, "OTP_EXPIRED", "otp has expired");
     }
 
-    if (otp.attempts >= otp.maxAttempts) {
+    // Atomically claim an attempt before comparing. Parallel guesses cannot
+    // exceed maxAttempts because the increment only succeeds while attempts < maxAttempts.
+    const claimed = await prisma.otpCode.updateMany({
+      where: { id: otp.id, consumedAt: null, attempts: { lt: otp.maxAttempts } },
+      data: { attempts: { increment: 1 } },
+    });
+    if (claimed.count === 0) {
       return sendError(reply, 429, "OTP_LOCKED", "too many incorrect attempts");
     }
 
-    const isValid = verifyOtpCode(code, otp.codeHash);
-
-    if (!isValid) {
-      await prisma.otpCode.update({
-        where: { id: otp.id },
-        data: { attempts: { increment: 1 } },
-      });
+    if (!verifyOtpCode(code, otp.codeHash)) {
       return sendError(reply, 400, "OTP_INCORRECT", "incorrect code");
     }
 
-    await prisma.otpCode.update({
-      where: { id: otp.id },
+    // Single use: only one concurrent request can flip consumedAt from null.
+    const consumed = await prisma.otpCode.updateMany({
+      where: { id: otp.id, consumedAt: null },
       data: { consumedAt: new Date() },
     });
+    if (consumed.count === 0) {
+      return sendError(reply, 400, "OTP_NOT_FOUND", "no active otp for this user");
+    }
 
     return reply.status(200).send({ status: "verified", userId: user.id });
   });

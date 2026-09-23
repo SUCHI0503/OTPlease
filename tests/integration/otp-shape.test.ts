@@ -64,7 +64,7 @@ describe("otp routes (shape only, Phase 4)", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("returns not-found for verify when the user does not exist", async () => {
+  it("returns the generic otp-not-found error when the user does not exist", async () => {
     const zomato = await createApplication("Zomato");
 
     const res = await app.inject({
@@ -73,7 +73,8 @@ describe("otp routes (shape only, Phase 4)", () => {
       payload: { phone: "+919876543210", code: "123456" },
     });
 
-    expect(res.statusCode).toBe(404);
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("OTP_NOT_FOUND");
   });
 
   it("rejects verify with a wrong code when the user exists", async () => {

@@ -137,4 +137,75 @@ describe("otp verify — real logic (Phase 5)", () => {
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe("OTP_NOT_FOUND");
   });
+
+  it("rejects the second use of a code that was just verified", async () => {
+    const zomato = await createApplication("Zomato");
+    const user = await createUser(zomato.id, PHONE);
+    await seedOtp(zomato.id, user.id, "666666");
+    const req = { method: "POST" as const, url: `/applications/${zomato.id}/otp/verify`, payload: { phone: PHONE, code: "666666" } };
+
+    expect((await app.inject(req)).statusCode).toBe(200);
+    const second = await app.inject(req);
+    expect(second.statusCode).toBe(400);
+    expect(second.json().error.code).toBe("OTP_NOT_FOUND");
+  });
+
+  it("lets only one of many parallel verifies with the correct code succeed", async () => {
+    const zomato = await createApplication("Zomato");
+    const user = await createUser(zomato.id, PHONE);
+    await seedOtp(zomato.id, user.id, "777777");
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        app.inject({
+          method: "POST",
+          url: `/applications/${zomato.id}/otp/verify`,
+          payload: { phone: PHONE, code: "777777" },
+        })
+      )
+    );
+
+    expect(results.filter((r) => r.statusCode === 200)).toHaveLength(1);
+  });
+
+  it("never allows more than maxAttempts guesses under parallel load", async () => {
+    const zomato = await createApplication("Zomato");
+    const user = await createUser(zomato.id, PHONE);
+    const otp = await seedOtp(zomato.id, user.id, "888888");
+
+    await Promise.all(
+      Array.from({ length: 30 }, () =>
+        app.inject({
+          method: "POST",
+          url: `/applications/${zomato.id}/otp/verify`,
+          payload: { phone: PHONE, code: "000000" },
+        })
+      )
+    );
+
+    const updated = await prisma.otpCode.findUnique({ where: { id: otp.id } });
+    expect(updated?.attempts).toBe(5);
+  });
+
+  it("invalidates older codes when a new one is requested", async () => {
+    const zomato = await createApplication("Zomato");
+    const user = await createUser(zomato.id, PHONE);
+    await seedOtp(zomato.id, user.id, "999111");
+
+    await app.inject({
+      method: "POST",
+      url: `/applications/${zomato.id}/otp/request`,
+      payload: { phone: PHONE },
+    });
+
+    const active = await prisma.otpCode.count({ where: { userId: user.id, consumedAt: null } });
+    expect(active).toBe(1);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/applications/${zomato.id}/otp/verify`,
+      payload: { phone: PHONE, code: "999111" },
+    });
+    expect(res.json().error.code).toBe("OTP_INCORRECT");
+  });
 });
