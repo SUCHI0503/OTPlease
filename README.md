@@ -86,6 +86,10 @@ Full reference: `GET /docs` (Swagger UI) or `GET /openapi.json`.
 
 **The demo app** (`apps/demo`, port 3002) is a small product that signs users in with OTPlease. It doubles as the reference integration: all API calls are in `apps/demo/lib/otplease.ts`, the API key stays on the server, tokens are kept in httpOnly cookies, and the visitor's device and IP are forwarded so OTPlease can spot new devices.
 
+## Performance
+
+Measured numbers, and how to repeat them, are in [docs/benchmarks](docs/benchmarks/README.md). The Phase 18 baseline ([baseline.md](docs/benchmarks/baseline.md)) shows p50/p95/p99 and CPU cost at 10 to 2000 requests per second. Rate limits and the log level can be tuned with `RATE_LIMITS_JSON` and `LOG_LEVEL` (see `apps/server/.env.example`), and `npm run build:backend` produces the plain-JavaScript build used for benchmarking.
+
 ## Security notes
 
 - OTP codes are HMAC-hashed, expire, are single use and attempt-limited; codes are encrypted while in the job queue and never logged.

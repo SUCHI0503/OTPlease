@@ -137,6 +137,9 @@ async function dockerStats() {
   return r;
 }
 
+const withTimeout = (promise, ms, what) =>
+  Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error(`${what} took longer than ${ms / 1000}s`)), ms))]);
+
 const pct = (sorted, p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] : null);
 
 async function drive({ method, path: p, headers = () => ({}), body, rate, duration }) {
@@ -163,7 +166,9 @@ const scenarios = {
   otp_verify: {
     title: "POST /otp/verify (correct code: creates a session)",
     prepare: async (rate, duration) => {
-      const phones = await seedVerifyUsers(Math.ceil(rate * (duration + 6) * 1.15) + 600);
+      // The pool is consumed at the ACHIEVED rate, which saturates far below the highest targets, so a huge pool only
+      // wastes memory (an uncapped one pushed a small laptop into swap). If the pool ever runs out, the status codes show it.
+      const phones = await seedVerifyUsers(Math.min(15_000, Math.ceil(rate * (duration + 6) * 1.15) + 600));
       let i = 0;
       return { method: "POST", path: `/applications/${app.id}/otp/verify`, headers: () => ({ "x-api-key": key }), body: () => ({ phone: phones[i++ % phones.length], code: "123456" }) };
     },
@@ -199,9 +204,57 @@ results.environment = {
   os: `${os.type()} ${os.release()}`, node: process.version, postgres: pgVersion.split(" on ")[0], redis: (await redis.info("server")).match(/redis_version:(\S+)/)?.[1],
   dockerVm: dockerInfo, apiProcess: "node apps/server/dist/index.js (single process, single thread)", workerProcess: "node apps/worker/dist/index.js (concurrency 10 per queue)",
   prismaPoolSize: `default: ${os.cpus().length * 2 + 1} connections (logical CPUs x 2 + 1)`, logLevel: childEnv.LOG_LEVEL, provider: "mock (no real messages are sent)",
+  systemAtStart: `load average ${os.loadavg().map((x) => x.toFixed(1)).join(" / ")}, ${sh("sysctl", ["-n", "vm.swapusage"]).stdout.trim()}`,
   rateLimits: "raised to 10,000,000 per window so limiters are not measured", loadGenerator: `autocannon ${JSON.parse(readFileSync(path.join(root, "node_modules/autocannon/package.json"), "utf8")).version}, same machine`,
 };
 say(`environment: ${results.environment.machine}`);
+
+async function runLevel(name, sc, rate) {
+  await resetData();
+  const tSeed = Date.now();
+  const spec = await sc.prepare(rate, DURATION + 6);
+  if (Date.now() - tSeed > 5000) say(`   (seeding took ${((Date.now() - tSeed) / 1000).toFixed(1)}s)`);
+  await drive({ ...spec, rate: Math.min(rate, 100), duration: 4 }); // warm-up, discarded
+  // verify keeps going through its pool of seeded users; request starts clean after the warm-up
+  if (name === "otp_request") await resetData();
+
+  const apiCpu0 = cpuSeconds(api.pid), workerCpu0 = cpuSeconds(worker.pid), selfCpu0 = process.cpuUsage();
+  const samples = [];
+  let sampling = false; // never let two samples overlap
+  const sampler = setInterval(async () => {
+    if (sampling) return;
+    sampling = true;
+    try { samples.push(await dockerStats()); } catch { /* a missed sample is fine */ } finally { sampling = false; }
+  }, 3000);
+  const t0 = Date.now();
+  const { r, latencies, statuses, connections } = await drive({ ...spec, rate, duration: DURATION });
+  const wall = (Date.now() - t0) / 1000;
+  clearInterval(sampler);
+  const apiCores = (cpuSeconds(api.pid) - apiCpu0) / wall, workerCores = (cpuSeconds(worker.pid) - workerCpu0) / wall;
+  const self = process.cpuUsage(selfCpu0), loadGenCores = (self.user + self.system) / 1e6 / wall;
+
+  const sorted = latencies.slice().sort((a, b) => a - b);
+  const ok = Object.entries(statuses).filter(([s]) => s.startsWith("2")).reduce((n, [, c]) => n + c, 0);
+  const total = latencies.length;
+  const pgCpu = samples.map((x) => x.postgres?.cpu ?? 0), redisCpu = samples.map((x) => x.redis?.cpu ?? 0);
+  const level = {
+    targetRps: rate, connections, seconds: DURATION, completed: total, achievedRps: +(total / DURATION).toFixed(1),
+    success2xx: ok, errorRatePct: +(((total - ok + r.errors + r.timeouts) / Math.max(1, total + r.errors + r.timeouts)) * 100).toFixed(3),
+    statusCodes: statuses, errors: r.errors, timeouts: r.timeouts,
+    latencyMs: { mean: +(sorted.reduce((a, b) => a + b, 0) / Math.max(1, total)).toFixed(2), p50: pct(sorted, 0.5), p90: pct(sorted, 0.9), p95: pct(sorted, 0.95), p99: pct(sorted, 0.99), max: sorted.at(-1) ?? null },
+    cpuCores: { api: +apiCores.toFixed(2), worker: +workerCores.toFixed(2), postgres: +(Math.max(0, ...pgCpu) / 100).toFixed(2), redis: +(Math.max(0, ...redisCpu) / 100).toFixed(2), loadGenerator: +loadGenCores.toFixed(2) },
+    apiMemoryMb: Math.round(rssMb(api.pid)),
+    swapUsedMbAtEnd: Number((sh("sysctl", ["-n", "vm.swapusage"]).stdout.match(/used = ([\d.]+)M/) ?? [])[1] ?? 0),
+  };
+  level.saturated = level.achievedRps < rate * 0.95 || level.errorRatePct > 1;
+  if (name === "otp_request") level.queue = await queueLag();
+  return level;
+}
+
+function saveResults() {
+  mkdirSync(path.join(root, "docs/benchmarks/results"), { recursive: true });
+  writeFileSync(path.join(root, `docs/benchmarks/results/${LABEL}.json`), JSON.stringify(results, null, 2) + "\n");
+}
 
 for (const name of SCENARIOS) {
   const sc = scenarios[name];
@@ -209,54 +262,26 @@ for (const name of SCENARIOS) {
   results.scenarios[name] = { title: sc.title, levels: [] };
   say(`=== ${sc.title}`);
   for (const rate of LEVELS) {
-    await resetData();
-    const spec = await sc.prepare(rate, DURATION + 6);
-    await drive({ ...spec, rate: Math.min(rate, 100), duration: 4 }); // warm-up, discarded (verify users are seeded with headroom for it)
-    // verify keeps going through its (generously sized) pool of seeded users; request starts clean after the warm-up
-    if (name === "otp_request") await resetData();
-
-    const apiCpu0 = cpuSeconds(api.pid), workerCpu0 = cpuSeconds(worker.pid), selfCpu0 = process.cpuUsage();
-    const samples = [];
-    let sampling = false; // never let two samples overlap
-    const sampler = setInterval(async () => {
-      if (sampling) return;
-      sampling = true;
-      try { samples.push(await dockerStats()); } catch { /* a missed sample is fine */ } finally { sampling = false; }
-    }, 3000);
-    const t0 = Date.now();
-    const { r, latencies, statuses, connections } = await drive({ ...spec, rate, duration: DURATION });
-    const wall = (Date.now() - t0) / 1000;
-    clearInterval(sampler);
-    const apiCores = (cpuSeconds(api.pid) - apiCpu0) / wall, workerCores = (cpuSeconds(worker.pid) - workerCpu0) / wall;
-    const self = process.cpuUsage(selfCpu0), loadGenCores = (self.user + self.system) / 1e6 / wall;
-
-    const sorted = latencies.slice().sort((a, b) => a - b);
-    const ok = Object.entries(statuses).filter(([s]) => s.startsWith("2")).reduce((n, [, c]) => n + c, 0);
-    const total = latencies.length;
-    const pgCpu = samples.map((s) => s.postgres?.cpu ?? 0), redisCpu = samples.map((s) => s.redis?.cpu ?? 0);
-    const level = {
-      targetRps: rate, connections, seconds: DURATION, completed: total, achievedRps: +(total / DURATION).toFixed(1),
-      success2xx: ok, errorRatePct: +(((total - ok + r.errors + r.timeouts) / Math.max(1, total + r.errors + r.timeouts)) * 100).toFixed(3),
-      statusCodes: statuses, errors: r.errors, timeouts: r.timeouts,
-      latencyMs: { mean: +(sorted.reduce((a, b) => a + b, 0) / Math.max(1, total)).toFixed(2), p50: pct(sorted, 0.5), p90: pct(sorted, 0.9), p95: pct(sorted, 0.95), p99: pct(sorted, 0.99), max: sorted.at(-1) ?? null },
-      cpuCores: { api: +apiCores.toFixed(2), worker: +workerCores.toFixed(2), postgres: +(Math.max(0, ...pgCpu) / 100).toFixed(2), redis: +(Math.max(0, ...redisCpu) / 100).toFixed(2), loadGenerator: +loadGenCores.toFixed(2) },
-      apiMemoryMb: Math.round(rssMb(api.pid)),
-    };
-    level.saturated = level.achievedRps < rate * 0.95 || level.errorRatePct > 1;
-    if (name === "otp_request") level.queue = await queueLag();
-    results.scenarios[name].levels.push(level);
-    const q = level.queue ? `  worker drained in ${(level.queue.drainedAfterMs / 1000).toFixed(1)}s, lag p95 ${level.queue.lagMs.p95.toFixed(0)}ms` : "";
-    say(`${name} @ ${rate} rps -> achieved ${level.achievedRps}, p50 ${level.latencyMs.p50?.toFixed(1)} p95 ${level.latencyMs.p95?.toFixed(1)} p99 ${level.latencyMs.p99?.toFixed(1)} ms, errors ${level.errorRatePct}%, cpu api ${level.cpuCores.api} pg ${level.cpuCores.postgres} redis ${level.cpuCores.redis}${level.saturated ? "  [SATURATED]" : ""}${q}`);
-    if (level.errorRatePct > 50) { say("more than half the requests failed here; skipping higher levels for this scenario"); break; }
+    try {
+      const level = await withTimeout(runLevel(name, sc, rate), (DURATION + 90) * 1000, `${name} @ ${rate} rps`);
+      results.scenarios[name].levels.push(level);
+      saveResults(); // survive a crash or an interruption: never lose finished levels
+      const q = level.queue ? `  worker drained in ${(level.queue.drainedAfterMs / 1000).toFixed(1)}s, lag p95 ${level.queue.lagMs.p95.toFixed(0)}ms` : "";
+      say(`${name} @ ${rate} rps -> achieved ${level.achievedRps}, p50 ${level.latencyMs.p50?.toFixed(1)} p95 ${level.latencyMs.p95?.toFixed(1)} p99 ${level.latencyMs.p99?.toFixed(1)} ms, errors ${level.errorRatePct}%, cpu api ${level.cpuCores.api} pg ${level.cpuCores.postgres} redis ${level.cpuCores.redis}${level.saturated ? "  [SATURATED]" : ""}${q}`);
+      if (level.errorRatePct > 50) { say("more than half the requests failed here; skipping higher levels for this scenario"); break; }
+    } catch (err) {
+      say(`!! ${name} @ ${rate} rps did not finish: ${err.message}. Recording it and moving on.`);
+      results.scenarios[name].levels.push({ targetRps: rate, failed: err.message });
+      saveResults();
+      break;
+    }
     await new Promise((r) => setTimeout(r, 3000)); // let things settle
   }
 }
 
 results.finishedAt = new Date().toISOString();
-mkdirSync(path.join(root, "docs/benchmarks/results"), { recursive: true });
-const outFile = path.join(root, `docs/benchmarks/results/${LABEL}.json`);
-writeFileSync(outFile, JSON.stringify(results, null, 2) + "\n");
-say(`wrote ${path.relative(root, outFile)}`);
+saveResults();
+say(`wrote docs/benchmarks/results/${LABEL}.json`);
 
 stopAll();
 await prisma.$disconnect();
