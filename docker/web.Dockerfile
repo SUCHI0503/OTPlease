@@ -5,7 +5,6 @@ WORKDIR /repo
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
 COPY apps/demo/package.json apps/demo/
-COPY apps/docs/package.json apps/docs/
 COPY packages packages
 RUN npm ci -w ${APP} --include-workspace-root
 COPY apps/${APP} apps/${APP}
