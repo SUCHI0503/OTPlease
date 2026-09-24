@@ -27,7 +27,8 @@ export async function login(_prev: FormState, form: FormData): Promise<FormState
   (await cookies()).set(TOKEN_COOKIE, token, {
     httpOnly: true,
     sameSite: "strict",
-    secure: process.env.NODE_ENV === "production",
+    // COOKIE_SECURE=false lets the Docker stack run over plain http://localhost (Safari refuses Secure cookies there)
+    secure: process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === "true" : process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 60 * 60 * 8,
   });

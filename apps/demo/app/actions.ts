@@ -46,7 +46,8 @@ export async function checkCode(_prev: LoginState, form: FormData): Promise<Logi
   (await cookies()).set(SESSION_COOKIE, JSON.stringify({ accessToken: res.data.accessToken, refreshToken: res.data.refreshToken }), {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    // COOKIE_SECURE=false lets the Docker stack run over plain http://localhost (Safari refuses Secure cookies there)
+    secure: process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === "true" : process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 60 * 60 * 24 * 30,
   });

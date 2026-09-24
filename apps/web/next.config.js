@@ -24,6 +24,8 @@ const securityHeaders = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Docker image: a self-contained server in .next/standalone (traced from the repo root for the monorepo)
+  ...(process.env.NEXT_STANDALONE === "true" ? { output: "standalone", outputFileTracingRoot: new URL("../..", import.meta.url).pathname } : {}),
   poweredByHeader: false,
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];

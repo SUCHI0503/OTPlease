@@ -1,0 +1,84 @@
+# The full stack in one command:   docker compose -f docker-compose.stack.yml up --build
+#   dashboard  http://localhost:3000   (sign in with the ADMIN_TOKEN below)
+#   demo shop  http://localhost:3002   (the codes it sends show up in Mailpit / the mock outbox)
+#   API + docs http://localhost:4000/docs      Mailpit http://localhost:8025
+# LOCAL DEMO ONLY: the secrets below are throwaway values for this machine. Real deployments (Phase 21) pass
+# their own through the environment; never reuse these.
+name: otplease
+
+x-backend-env: &backend-env
+  NODE_ENV: development # production refuses the mock provider, and this stack has no real Twilio account
+  DATABASE_URL: postgresql://otplease:otplease@postgres:5432/otplease
+  REDIS_URL: redis://redis:6379/0
+  OTP_HASH_SECRET: ${OTP_HASH_SECRET:-4c1f9a7e2b8d5036e1a9c47f20bd8635a7e0c91d3f5b2846}
+  JWT_SECRET: ${JWT_SECRET:-9d2e7b40a1c6f38580e4b7d92a1f6c3e5b08d47a9c21e6f3}
+  ADMIN_TOKEN: ${ADMIN_TOKEN:-b7a3e91c5d08f24a6e1b9c3d7f50a2e84c6b1d9f3a7e0582}
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+  MOCK_OUTBOX_REDIS: "true"
+
+services:
+  postgres:
+    image: postgres:16
+    environment: { POSTGRES_USER: otplease, POSTGRES_PASSWORD: otplease, POSTGRES_DB: otplease }
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U otplease"], interval: 3s, retries: 20 }
+
+  redis:
+    image: redis:7
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 3s, retries: 20 }
+
+  mailpit:
+    image: axllent/mailpit
+    ports: ["8025:8025"]
+
+  migrate:
+    build: { context: ., dockerfile: docker/backend.Dockerfile }
+    command: ["npx", "prisma", "migrate", "deploy", "--schema", "apps/server/prisma/schema.prisma"]
+    environment: *backend-env
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: "no"
+
+  api:
+    build: { context: ., dockerfile: docker/backend.Dockerfile }
+    environment: *backend-env
+    ports: ["4000:4000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      retries: 20
+
+  worker:
+    build: { context: ., dockerfile: docker/backend.Dockerfile }
+    command: ["node", "apps/worker/dist/index.js"]
+    environment: *backend-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  dashboard:
+    build: { context: ., dockerfile: docker/web.Dockerfile, args: { APP: web } }
+    environment:
+      API_URL: http://api:4000
+      COOKIE_SECURE: "false"
+      PORT: "3000"
+    ports: ["3000:3000"]
+    depends_on: { api: { condition: service_healthy } }
+
+  demo:
+    build: { context: ., dockerfile: docker/web.Dockerfile, args: { APP: demo } }
+    environment:
+      OTPLEASE_URL: http://api:4000
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-b7a3e91c5d08f24a6e1b9c3d7f50a2e84c6b1d9f3a7e0582}
+      COOKIE_SECURE: "false"
+      PORT: "3002"
+    ports: ["3002:3002"]
+    volumes: [demodata:/data]
+    depends_on: { api: { condition: service_healthy } }
+
+volumes:
+  pgdata:
+  demodata:

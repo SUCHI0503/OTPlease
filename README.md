@@ -49,6 +49,21 @@ A good tour: sign in on the demo app, then open the dashboard and click **Demo S
 
 Without Twilio settings every phone channel uses the **mock provider**. Nothing real is ever sent.
 
+## Run everything in Docker
+
+One command builds and starts Postgres, Redis, Mailpit, the API, the worker, the dashboard and the demo shop:
+
+```bash
+docker compose -f docker-compose.stack.yml up --build
+```
+
+- Dashboard: http://localhost:3000 (sign in with the `ADMIN_TOKEN` in the compose file)
+- Demo shop: http://localhost:3002 (it creates its own application and API key on first start)
+- API docs: http://localhost:4000/docs, Mailpit: http://localhost:8025
+- Stop with `docker compose -f docker-compose.stack.yml down` (add `-v` to wipe the data)
+
+This stack is for a local demo: it uses the mock provider and throwaway secrets that are written in the compose file. Real deployments pass their own secrets (`NODE_ENV=production` refuses mock delivery and placeholder secrets). Use the plain `docker-compose.yml` when you only want the databases for `npm run dev`.
+
 ## Try the API
 
 ```bash
