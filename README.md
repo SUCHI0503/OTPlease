@@ -101,6 +101,10 @@ Full reference: `GET /docs` (Swagger UI) or `GET /openapi.json`.
 
 **The demo app** (`apps/demo`, port 3002) is a small product that signs users in with OTPlease. It doubles as the reference integration: all API calls are in `apps/demo/lib/otplease.ts`, the API key stays on the server, tokens are kept in httpOnly cookies, and the visitor's device and IP are forwarded so OTPlease can spot new devices.
 
+## CI
+
+`.github/workflows/ci.yml` runs on every push and pull request, with four jobs: types + unit/integration/security tests with the coverage floor, the Playwright end-to-end suite, a dependency audit plus a gitleaks secret scan over the whole history, and a Docker build that boots the full stack and smoke-tests it. CI has no real credentials: it generates random test secrets (`scripts/ci/make-test-env.mjs`) and always uses the mock provider. The `npm audit` step fails on critical findings in production dependencies and warns on high ones (today: `deepmerge-ts` inside the Prisma CLI, fixed only by a Prisma major upgrade).
+
 ## Performance
 
 Measured numbers, and how to repeat them, are in [docs/benchmarks](docs/benchmarks/README.md). The Phase 18 baseline ([baseline.md](docs/benchmarks/baseline.md)) shows p50/p95/p99 and CPU cost at 10 to 2000 requests per second. Rate limits and the log level can be tuned with `RATE_LIMITS_JSON` and `LOG_LEVEL` (see `apps/server/.env.example`), and `npm run build:backend` produces the plain-JavaScript build used for benchmarking.
