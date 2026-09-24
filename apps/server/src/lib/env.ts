@@ -1,7 +1,41 @@
 import { z } from "zod";
+import { RATE_LIMIT_NAMES } from "./ratelimit";
+
+const rateLimitValue = z.object({
+  limit: z.number().int().min(1).max(10_000_000),
+  windowSeconds: z.number().int().min(1).max(86_400),
+});
+const rateLimitOverrides = z
+  .object(Object.fromEntries(RATE_LIMIT_NAMES.map((name) => [name, rateLimitValue.optional()])) as Record<(typeof RATE_LIMIT_NAMES)[number], z.ZodOptional<typeof rateLimitValue>>)
+  .strict();
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
+  // Tunes the rate limits without a code change, e.g. '{"otpRequestPerIp":{"limit":5000,"windowSeconds":600}}'.
+  // Names: otpRequestPerPhone, otpRequestPerIp, otpRequestPerCountry, otpRequestPerApplication, verifyPerPhone,
+  // verifyPerIp, refreshPerIp, authFailuresPerIp. Used for load tests; the server logs a warning when it is set.
+  RATE_LIMITS_JSON: z
+    .string()
+    .optional()
+    .transform((value, ctx) => {
+      if (!value) return {};
+      let raw: unknown;
+      try {
+        raw = JSON.parse(value);
+      } catch {
+        ctx.addIssue({ code: "custom", message: "RATE_LIMITS_JSON is not valid JSON" });
+        return z.NEVER;
+      }
+      const parsed = rateLimitOverrides.safeParse(raw);
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          ctx.addIssue({ code: "custom", message: `RATE_LIMITS_JSON ${issue.path.join(".") || "value"}: ${issue.message}` });
+        }
+        return z.NEVER;
+      }
+      return parsed.data;
+    }),
   PORT: z.coerce.number().int().positive().default(4000),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   OTP_HASH_SECRET: z.string().min(32, "OTP_HASH_SECRET must be at least 32 characters"),

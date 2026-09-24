@@ -7,10 +7,10 @@ import path from "node:path";
 const ROOT = path.resolve(__dirname, "../..");
 
 /** Starts the real env validation in a fresh process, exactly as the server does at boot. */
-function boot(overrides: Record<string, string | undefined>) {
+function boot(overrides: Record<string, string | undefined>, script = "import('./apps/server/src/lib/env').then(() => console.log('BOOT_OK'))") {
   const env: Record<string, string | undefined> = { ...process.env, ...overrides };
   for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
-  const res = spawnSync("npx", ["tsx", "-e", "import('./apps/server/src/lib/env').then(() => console.log('BOOT_OK'))"], {
+  const res = spawnSync("npx", ["tsx", "-e", script], {
     cwd: ROOT, env: env as NodeJS.ProcessEnv, encoding: "utf8", timeout: 60_000,
   });
   return { ok: res.status === 0 && res.stdout.includes("BOOT_OK"), output: `${res.stdout}${res.stderr}` };
@@ -103,6 +103,73 @@ function scan(text: string): string[] {
   }
   return found;
 }
+
+describe("tuning through the environment", () => {
+  const LIMIT = { otpRequestPerIp: { limit: 5000, windowSeconds: 600 } };
+
+  it("accepts valid rate-limit overrides and log levels", () => {
+    expect(boot({ ...SECRETS, RATE_LIMITS_JSON: JSON.stringify(LIMIT) }).ok).toBe(true);
+    expect(boot({ ...SECRETS, RATE_LIMITS_JSON: "{}" }).ok).toBe(true);
+    expect(boot({ ...SECRETS, LOG_LEVEL: "silent" }).ok).toBe(true);
+  }, SLOW);
+
+  it("refuses malformed or unsafe rate-limit overrides", () => {
+    const bad = [
+      "not json",
+      "[]",
+      JSON.stringify({ madeUpLimit: { limit: 1, windowSeconds: 1 } }),
+      JSON.stringify({ otpRequestPerIp: { limit: 0, windowSeconds: 60 } }),
+      JSON.stringify({ otpRequestPerIp: { limit: 99_000_000, windowSeconds: 60 } }),
+      JSON.stringify({ otpRequestPerIp: { limit: 10, windowSeconds: 0 } }),
+      JSON.stringify({ otpRequestPerIp: { limit: 1.5, windowSeconds: 60 } }),
+      JSON.stringify({ otpRequestPerIp: { limit: 10 } }),
+    ];
+    for (const value of bad) {
+      const r = boot({ ...SECRETS, RATE_LIMITS_JSON: value });
+      expect(r.ok, value).toBe(false);
+      expect(r.output, value).toMatch(/RATE_LIMITS_JSON/);
+    }
+  }, SLOW * 2);
+
+  it("refuses an unknown log level", () => {
+    expect(boot({ ...SECRETS, LOG_LEVEL: "loud" }).ok).toBe(false);
+  }, SLOW);
+
+  it("applies the override to the running app and warns about it in the log", () => {
+    const script = `(async () => {
+      const { buildApp } = await import('./apps/server/src/app');
+      const app = buildApp();
+      await app.ready();
+      await app.close();
+      console.log('APP_OK');
+    })()`;
+    const r = boot({ ...SECRETS, RATE_LIMITS_JSON: JSON.stringify(LIMIT), LOG_LEVEL: "warn" }, script);
+    expect(r.output).toContain("APP_OK");
+    expect(r.output).toContain("rate limits are overridden");
+    expect(r.output).toContain("otpRequestPerIp");
+
+    // nothing overridden: no warning
+    const quiet = boot({ ...SECRETS, RATE_LIMITS_JSON: undefined, LOG_LEVEL: "warn" }, script);
+    expect(quiet.output).toContain("APP_OK");
+    expect(quiet.output).not.toContain("rate limits are overridden");
+  }, SLOW * 2);
+
+  it("LOG_LEVEL=silent really silences the server", () => {
+    const script = `(async () => {
+      const { buildApp } = await import('./apps/server/src/app');
+      const app = buildApp();
+      await app.ready();
+      await app.inject({ method: 'GET', url: '/health' });
+      await app.close();
+      console.log('APP_OK');
+    })()`;
+    const loud = boot({ ...SECRETS, LOG_LEVEL: "info" }, script);
+    const silent = boot({ ...SECRETS, LOG_LEVEL: "silent" }, script);
+    expect(loud.output).toContain("request completed");
+    expect(silent.output).not.toContain("request completed");
+    expect(silent.output).toContain("APP_OK");
+  }, SLOW * 2);
+});
 
 describe("no secrets in the repository", () => {
   // Committed files AND new files not yet committed (but not ignored ones like .env), so a secret is caught before it is ever committed

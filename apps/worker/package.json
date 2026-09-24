@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../server/.env src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "start": "node --env-file=../server/.env dist/index.js"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

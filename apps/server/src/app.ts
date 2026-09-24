@@ -67,7 +67,8 @@ export function buildApp(
   } = {}
 ) {
   const redis = options.redis ?? createRedis();
-  const limits: RateLimits = { ...defaultRateLimits, ...options.limits };
+  // Precedence: built-in defaults, then RATE_LIMITS_JSON from the environment, then explicit options (tests)
+  const limits: RateLimits = { ...defaultRateLimits, ...env.RATE_LIMITS_JSON, ...options.limits };
   const otpQueue = createOtpQueue(options.queue);
   const webhookQueue = createWebhookQueue(options.webhookQueue);
   const emit = createWebhookEmitter(prisma, webhookQueue);
@@ -80,6 +81,7 @@ export function buildApp(
     logger:
       (options.logger ?? true)
         ? {
+            level: env.LOG_LEVEL,
             // Defence in depth: request bodies are never logged, and these are scrubbed even if that changes
             redact: {
               paths: [
@@ -103,6 +105,11 @@ export function buildApp(
           }
         : false,
   });
+
+  const overridden = Object.keys(env.RATE_LIMITS_JSON);
+  if (overridden.length > 0) {
+    app.log.warn({ overridden }, "rate limits are overridden by RATE_LIMITS_JSON: make sure this is intended");
+  }
 
   const registeredRoutes: { method: string; url: string }[] = [];
   app.decorate("registeredRoutes", registeredRoutes);

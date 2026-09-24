@@ -27,6 +27,18 @@ export interface RateLimits {
   authFailuresPerIp: { limit: number; windowSeconds: number };
 }
 
+/** Every limit that can be tuned, in one place (also used to validate RATE_LIMITS_JSON) */
+export const RATE_LIMIT_NAMES = [
+  "otpRequestPerPhone",
+  "otpRequestPerIp",
+  "otpRequestPerCountry",
+  "otpRequestPerApplication",
+  "verifyPerPhone",
+  "verifyPerIp",
+  "refreshPerIp",
+  "authFailuresPerIp",
+] as const satisfies readonly (keyof RateLimits)[];
+
 export const defaultRateLimits: RateLimits = {
   // Also the cost guard against SMS pumping: few sends per phone, a hard cap per tenant
   otpRequestPerPhone: { limit: 3, windowSeconds: 600 },

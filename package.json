@@ -16,11 +16,15 @@
     "dev:worker": "npm run dev -w worker",
     "dev:dashboard": "npm run dev -w web",
     "dev:demo": "npm run dev -w demo",
-    "demo:setup": "node scripts/setup-demo.mjs"
+    "demo:setup": "node scripts/setup-demo.mjs",
+    "build:backend": "node scripts/build.mjs",
+    "bench": "npm run build:backend && node scripts/bench/run.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@types/node": "^26.6.2",
+    "autocannon": "^8.0.0",
+    "esbuild": "^0.28.2",
     "prettier": "3.9.6",
     "turbo": "^2.11.1",
     "typescript": "7.0.2"

@@ -46,3 +46,6 @@ tests/e2e/results
 tests/e2e/report
 playwright-report
 test-results
+
+# Benchmark scratch output (the results files in docs/benchmarks are kept)
+docs/benchmarks/.logs
