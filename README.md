@@ -17,26 +17,37 @@ Your backend -> OTPlease API -> queue -> worker -> provider -> user
 | `apps/demo` | Sample product that signs users in with OTPlease (reference integration, end-to-end test target) |
 | `tests/` | Vitest unit and integration tests (they use a separate database and Redis DB) |
 
-## Run it locally
+## See it working
 
-Requires Node 24+, npm and Docker.
+Requires Node 24+, npm and Docker (Docker Desktop must be running).
 
 ```bash
 npm install
-docker compose up -d          # Postgres, Redis, Mailpit (local email inbox)
+docker compose up -d                       # Postgres, Redis, Mailpit (a local inbox for test emails)
 
-# apps/server/.env (see apps/server/.env.example for every variable)
-#   DATABASE_URL, OTP_HASH_SECRET, JWT_SECRET, ADMIN_TOKEN, REDIS_URL
-#   generate secrets with: openssl rand -hex 32
-cd apps/server && npx prisma migrate dev && cd ../..
+# One-time: create apps/server/.env from the template and fill in three secrets
+cp apps/server/.env.example apps/server/.env
+for v in OTP_HASH_SECRET JWT_SECRET ADMIN_TOKEN; do echo "$v=$(openssl rand -hex 32)"; done   # paste these into .env
+(cd apps/server && npx prisma migrate dev) # creates the tables
 
-# in three terminals
-npm run dev -w server         # API on :4000  (docs at http://localhost:4000/docs)
-npm run dev -w worker         # sends messages and webhooks
-npm run dev -w web            # dashboard on :3000, sign in with ADMIN_TOKEN
+# Then, in four terminals:
+npm run dev:api                            # the API on :4000
+npm run dev:worker                         # sends the messages (watch this terminal for codes!)
+npm run demo:setup && npm run dev:demo     # creates a demo application + key, then the demo app on :3002
+npm run dev:dashboard                      # the developer dashboard on :3000
 ```
 
-Without Twilio settings every phone channel uses the **mock provider**, which prints the code (masked recipient) to the worker terminal in development. Nothing real is ever sent.
+| What | Where | Notes |
+|---|---|---|
+| **Demo app**: a product that signs users in | http://localhost:3002 | Enter any valid phone number, e.g. `+91 98123 45678` |
+| **The code** | the `dev:worker` terminal | Look for `[mock provider] sms to +91********78: code 234321`. Nothing is really sent |
+| **Dashboard** | http://localhost:3000 | Sign in with `ADMIN_TOKEN` from `apps/server/.env`. Create apps and keys, add webhooks, watch usage |
+| **API reference** | http://localhost:4000/docs | Interactive Swagger UI (spec at `/openapi.json`) |
+| **Test emails** | http://localhost:8025 | Only used for the email channel, with `SMTP_HOST=localhost` and `SMTP_PORT=1025` set |
+
+A good tour: sign in on the demo app, then open the dashboard and click **Demo Shop**. You will see one OTP request, one login and one new device. Sign in again from a private window to see a second device.
+
+Without Twilio settings every phone channel uses the **mock provider**. Nothing real is ever sent.
 
 ## Try the API
 
