@@ -14,6 +14,7 @@ Your backend -> OTPlease API -> queue -> worker -> provider -> user
 | `apps/server` | Fastify API (Prisma, Redis rate limits, BullMQ producers) |
 | `apps/worker` | Sends OTP messages and webhooks, runs the hourly cleanup |
 | `apps/web` | Next.js dashboard (create apps, API keys, webhooks, see usage) |
+| `apps/demo` | Sample product that signs users in with OTPlease (reference integration, end-to-end test target) |
 | `tests/` | Vitest unit and integration tests (they use a separate database and Redis DB) |
 
 ## Run it locally
@@ -52,14 +53,27 @@ curl -X POST localhost:4000/applications/<id>/otp/verify  -H "x-api-key: <key>" 
 
 Full reference: `GET /docs` (Swagger UI) or `GET /openapi.json`.
 
-## Tests and checks
+## Tests
 
-```bash
-npm run typecheck             # server, worker and the tests
-cd apps/server && npx vitest run
-```
+| Level | What it checks | Command |
+|---|---|---|
+| Unit + integration + security | Logic, API with Postgres and Redis and the queue, attack scenarios (about 350 tests) | `npm test` |
+| Coverage | Same tests, with a coverage report and a floor (90% lines, 80% branches) | `npm run test:coverage` |
+| End to end | Real browsers driving the real stack: an end user signing in and out in the demo app, a developer using the dashboard, webhooks | `npm run test:e2e` |
+| Everything | Types, then all of the above | `npm run test:all` |
 
-Tests refuse to run unless `DATABASE_URL` points at `otplease_test` and `REDIS_URL` ends in `/1`. Create the test database once and apply migrations with `DATABASE_URL=... npx prisma migrate deploy`.
+`npm run typecheck` checks the server, worker and tests.
+
+**Test databases.** Tests refuse to run unless `DATABASE_URL` points at `otplease_test` and `REDIS_URL` ends in `/1`. Create the test database once and apply migrations with `DATABASE_URL=... npx prisma migrate deploy`. Put those values in `apps/server/.env.test`. Tests always use the mock provider, so no real message is ever sent.
+
+**End-to-end tests** start the whole stack themselves in separate processes on their own ports (API 4100, dashboard 3100, demo 3102), against the test database, with Twilio and SMTP switched off. The mock provider writes each code to a Redis list (`MOCK_OUTBOX_REDIS`, refused in production) so a test can read it like a user reading their phone. Reports and traces from failures land in `tests/e2e/report` and `tests/e2e/results`.
+
+- Locally the browser is your installed **Google Chrome**. Playwright cannot download its own browser on older macOS versions.
+- In CI use Playwright's browser: `npx playwright install chromium`, then `PW_CHANNEL=chromium npm run test:e2e`.
+- `E2E_SKIP_BUILD=1` reuses the previous build of the two Next.js apps, which saves about 30 seconds.
+- Do not run the unit tests and the end-to-end tests at the same time: they share the test database and Redis.
+
+**The demo app** (`apps/demo`, port 3002) is a small product that signs users in with OTPlease. It doubles as the reference integration: all API calls are in `apps/demo/lib/otplease.ts`, the API key stays on the server, tokens are kept in httpOnly cookies, and the visitor's device and IP are forwarded so OTPlease can spot new devices.
 
 ## Security notes
 

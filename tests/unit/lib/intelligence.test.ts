@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { maskRecipient } from "../../../apps/server/src/lib/mask";
 import { hashDevice, hashIp, ipInfo, maskIp, normalizeIp } from "../../../apps/server/src/lib/intelligence";
 
 describe("normalizeIp", () => {
@@ -52,5 +53,16 @@ describe("hashing", () => {
 
   it("keeps device and IP hashes apart even for identical strings", () => {
     expect(hashDevice("app-1", "203.0.113.5")).not.toBe(hashIp("app-1", "203.0.113.5"));
+  });
+});
+
+describe("maskRecipient", () => {
+  it("hides the middle of a phone number or email, keeping a hint", () => {
+    expect(maskRecipient("+919876543210")).toBe("+91********10");
+    expect(maskRecipient("+919876543210")).not.toContain("98765");
+  });
+  it("fully hides very short values", () => {
+    expect(maskRecipient("1234")).toBe("****");
+    expect(maskRecipient("")).toBe("****");
   });
 });

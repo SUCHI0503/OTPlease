@@ -25,6 +25,9 @@ const envSchema = z.object({
     .default("")
     .transform((v) => v.split(",").map((o) => o.trim()).filter(Boolean))
     .refine((list) => list.every((o) => { try { return new URL(o).origin === o; } catch { return false; } }), "CORS_ORIGINS must be exact origins like https://app.example.com (no paths, no *)"),
+  // Dev/test only: the mock provider also writes each message to the Redis list "mock:outbox", so an
+  // end-to-end test in another process can read the code. Refused in production.
+  MOCK_OUTBOX_REDIS: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
   // Lets webhooks point at localhost/private addresses. Local dev and tests only.
   WEBHOOK_ALLOW_PRIVATE_URLS: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
   // Optional Twilio (SMS, WhatsApp, Voice). Without it those channels use the mock provider.
@@ -57,6 +60,9 @@ const checkedSchema = envSchema.superRefine((v, ctx) => {
   }
   if (v.NODE_ENV === "production" && v.WEBHOOK_ALLOW_PRIVATE_URLS) {
     ctx.addIssue({ code: "custom", path: ["WEBHOOK_ALLOW_PRIVATE_URLS"], message: "must be false in production (SSRF protection)" });
+  }
+  if (v.NODE_ENV === "production" && v.MOCK_OUTBOX_REDIS) {
+    ctx.addIssue({ code: "custom", path: ["MOCK_OUTBOX_REDIS"], message: "must be false in production (it stores OTP codes in plain text)" });
   }
   // The mock provider must never be the real delivery path in production
   if (v.NODE_ENV === "production" && !(v.TWILIO_ACCOUNT_SID && v.SMTP_HOST)) {

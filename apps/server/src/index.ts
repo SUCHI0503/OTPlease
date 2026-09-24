@@ -4,8 +4,12 @@ import { buildApp } from "./app";
 const app = buildApp();
 
 // Finish in-flight requests and close Redis/Postgres/queues cleanly when the platform stops us
+let closing = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, async () => {
+    // Process managers can deliver the signal more than once (npx, tsx and node all forward it)
+    if (closing) return;
+    closing = true;
     app.log.info({ signal }, "shutting down");
     await app.close();
     process.exit(0);

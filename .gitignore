@@ -39,3 +39,10 @@ yarn-error.log*
 
 .env.test
 project-dump.txt
+
+# End-to-end test output
+tests/e2e/.logs
+tests/e2e/results
+tests/e2e/report
+playwright-report
+test-results

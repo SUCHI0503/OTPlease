@@ -7,9 +7,14 @@
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "check-types": "turbo run check-types",
-    "typecheck": "tsc --noEmit -p tsconfig.json && npm run typecheck -w server -w worker"
+    "typecheck": "tsc --noEmit -p tsconfig.json && npm run typecheck -w server -w worker",
+    "test": "npm run test -w server",
+    "test:coverage": "npm run test:coverage -w server",
+    "test:e2e": "playwright test",
+    "test:all": "npm run typecheck && npm test && npm run test:e2e"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^26.6.2",
     "prettier": "3.9.6",
     "turbo": "^2.11.1",

@@ -34,3 +34,11 @@ describe("hashOtpCode / verifyOtpCode", () => {
     expect(hashA).toBe(hashB);
   });
 });
+
+describe("verifyOtpCode with unusable stored hashes", () => {
+  it("returns false instead of throwing when the stored hash is malformed", () => {
+    for (const bad of ["", "abc", "zz".repeat(32), "0".repeat(10), "0".repeat(200)]) {
+      expect(verifyOtpCode("123456", bad), JSON.stringify(bad)).toBe(false);
+    }
+  });
+});
