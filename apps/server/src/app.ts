@@ -497,6 +497,21 @@ export function buildApp(
     return user;
   });
 
+  // Ends every active session of one user (for example after a `device.new` or `risk.challenged` event).
+  app.delete("/applications/:applicationId/users/:userId/sessions", async (request, reply) => {
+    const { applicationId, userId } = userParamsSchema.parse(request.params);
+    if (!(await authorize(request, reply, { scope: "users:write", applicationId }))) return reply;
+    if (!(await tenantUsers(prisma, applicationId).findById(userId))) {
+      return sendError(reply, 404, "USER_NOT_FOUND", "user not found");
+    }
+    const result = await prisma.session.updateMany({
+      where: { applicationId, userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    await audit(request, { applicationId, action: "user.sessions_revoked", targetType: "user", targetId: userId, metadata: { revoked: result.count } });
+    return { revoked: result.count };
+  });
+
   app.get("/applications/:applicationId/users/:userId/devices", async (request, reply) => {
     const { applicationId, userId } = userParamsSchema.parse(request.params);
     if (!(await authorize(request, reply, { scope: "users:read", applicationId }))) return reply;
@@ -528,7 +543,6 @@ export function buildApp(
           ...limits.otpRequestPerCountry,
         },
         { name: "otp-req-ip", subject: request.ip, ...limits.otpRequestPerIp },
-        { name: "otp-req-app", subject: applicationId, ...limits.otpRequestPerApplication },
       ])
     ) {
       return reply;
@@ -539,12 +553,27 @@ export function buildApp(
       return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
     }
 
+    // Per-tenant cost cap. Checked after the per-phone/IP/country limits so requests already refused
+    // by those do not burn the tenant's allowance. Applies in every risk mode, including "off".
+    const riskConfig = await getRiskConfig(prisma, applicationId);
+    if (
+      await rateLimited(reply, [
+        {
+          name: "otp-req-app",
+          subject: applicationId,
+          limit: riskConfig.sendCapPerHour ?? limits.otpRequestPerApplication.limit,
+          windowSeconds: limits.otpRequestPerApplication.windowSeconds,
+        },
+      ])
+    ) {
+      return reply;
+    }
+
     // Look the user up without creating them: a blocked request must not leave a new user behind
     const existingUser = await prisma.user.findUnique({ where: { applicationId_phone: { applicationId, phone } } });
     const signals = await computeSignals(prisma, redis, applicationId, existingUser?.id ?? null, phone, context);
 
     // Risk engine: `block` is enforced here (in enforce mode); `challenge` is passed to the caller to act on
-    const riskConfig = await getRiskConfig(prisma, applicationId);
     let risk: { decision: string; enforced: boolean; score: number; reasons: string[] } | null = null;
     if (riskConfig.mode !== "off") {
       const country = parsePhoneNumberFromString(phone)?.country ?? null;

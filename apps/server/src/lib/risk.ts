@@ -35,6 +35,11 @@ export const riskConfigSchema = z
     /** If not empty, only these countries may request codes */
     allowedCountries: z.array(country).max(250).default([]),
     blockedCountries: z.array(country).max(250).default([]),
+    /**
+     * Cost cap: most OTP requests this application may make per hour, whatever the risk mode.
+     * Leave it out to use the platform default (1000). Protects against SMS pumping and runaway bills.
+     */
+    sendCapPerHour: z.number().int().min(1, "sendCapPerHour must be at least 1").max(1_000_000).optional(),
     /** Treat requests without ip/deviceId as suspicious */
     requireContext: z.boolean().default(false),
     disabledRules: z.array(z.enum(RULE_CODES)).default([]),

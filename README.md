@@ -68,6 +68,7 @@ Tests refuse to run unless `DATABASE_URL` points at `otplease_test` and `REDIS_U
 - Repeated wrong API keys or admin tokens lock the calling IP out (429). Set `TRUST_PROXY` correctly behind a proxy, or every user shares one IP.
 - The three secrets (`OTP_HASH_SECRET`, `JWT_SECRET`, `ADMIN_TOKEN`) must differ, be at least 32 characters and not look like placeholders, or the server refuses to start.
 - No CORS headers are sent unless `CORS_ORIGINS` lists exact origins. API responses are `no-store`, non-sniffable and non-frameable; request bodies are capped at 64 KB.
+- Each application has an hourly cost cap on OTP requests (`sendCapPerHour` in its risk config, platform default 1000) that applies in every mode, plus per-phone, per-IP and per-country limits. `DELETE /applications/:id/users/:userId/sessions` ends all of a user's sessions at once.
 - An audit log records who changed keys, webhooks and risk rules (`GET /audit-logs`, or per application). It never holds secrets, full phone numbers or full URLs.
 - Webhooks are HMAC-signed with a timestamp (replay protection) and blocked from private addresses (SSRF).
 - `WEBHOOK_ALLOW_PRIVATE_URLS` is for local development only; the server refuses to start with it in production.

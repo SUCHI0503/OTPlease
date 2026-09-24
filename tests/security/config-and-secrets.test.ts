@@ -16,11 +16,9 @@ function boot(overrides: Record<string, string | undefined>) {
   return { ok: res.status === 0 && res.stdout.includes("BOOT_OK"), output: `${res.stdout}${res.stderr}` };
 }
 
-const SECRETS = {
-  OTP_HASH_SECRET: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
-  JWT_SECRET: "0f9e8d7c6b5a49382716051a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e",
-  ADMIN_TOKEN: "5c4b3a291807f6e5d4c3b2a1908f7e6d5c4b3a2918f7e6d5c4b3a2918f7e6d5c",
-};
+// Generated at runtime on purpose: a literal secret-shaped string in this file would trip the repository scan below
+const fresh = () => randomBytes(32).toString("hex");
+const SECRETS = { OTP_HASH_SECRET: fresh(), JWT_SECRET: fresh(), ADMIN_TOKEN: fresh() };
 
 // Each boot() starts a fresh Node process, so these tests get more time than the default
 const SLOW = 60_000;
@@ -107,7 +105,8 @@ function scan(text: string): string[] {
 }
 
 describe("no secrets in the repository", () => {
-  const tracked = execFileSync("git", ["ls-files"], { cwd: ROOT, encoding: "utf8" })
+  // Committed files AND new files not yet committed (but not ignored ones like .env), so a secret is caught before it is ever committed
+  const tracked = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], { cwd: ROOT, encoding: "utf8" })
     .split("\n")
     .filter(Boolean)
     .filter((f) => !/(package-lock\.json|\.(png|jpg|ico|woff2?|svg))$/.test(f));
@@ -128,13 +127,14 @@ describe("no secrets in the repository", () => {
   });
 
   it("the scan itself works: it flags realistic secrets and ignores obvious fixtures", () => {
-    const realKey = `otpl_1a2b3c4d5e6f_aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hLxR2uY5`;
-    const realWebhook = `whsec_kJ8mN2pQ5sT9vW3yZ6cF1hLxR4uY7aB0dE`;
+    // built from pieces at runtime, so this file itself contains nothing the scan would flag
+    const realKey = "otpl_" + "1a2b3c4d5e6f" + "_" + randomBytes(32).toString("base64url");
+    const realWebhook = "whsec_" + randomBytes(32).toString("base64url");
     const realHex = randomBytes(32).toString("hex"); // exactly 64 hex characters, like `openssl rand -hex 32`
     expect(scan(`key=${realKey}`)).toEqual(["OTPlease API key"]);
     expect(scan(`s=${realWebhook}`)).toEqual(["webhook signing secret"]);
     expect(scan(`token: ${realHex}`)).toEqual(["long hex secret"]);
-    expect(scan("-----BEGIN RSA PRIVATE KEY-----")).toEqual(["private key"]);
+    expect(scan("-----BEGIN " + "RSA PRIVATE KEY-----")).toEqual(["private key"]);
     expect(scan(`AKIA${"IOSFODNN7EXAMPLE"}`)).toEqual(["AWS access key"]);
 
     // the fixtures used by other tests must not trip it
