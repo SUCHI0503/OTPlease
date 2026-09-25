@@ -14,7 +14,19 @@ Each developer's data is fully isolated (an "application" is a tenant), the API 
 
 ## Contents
 
-[Features](#features) · [Project status](#project-status) · [Quick start](#quick-start) · [Using the API](#using-the-api) · [Configuration](#configuration) · [Architecture](#architecture) · [Security](#security) · [Testing](#testing) · [Performance](#performance) · [Deployment and monitoring](#deployment-and-monitoring) · [Documentation](#documentation)
+[Why it is worth a look](#why-it-is-worth-a-look) · [Features](#features) · [Tech stack](#tech-stack) · [Architecture](#architecture) · [Project status](#project-status) · [Quick start](#quick-start) · [Using the API](#using-the-api) · [Command reference](#command-reference) · [Configuration](#configuration) · [Security](#security) · [Testing](#testing) · [Performance](#performance) · [Deployment and monitoring](#deployment-and-monitoring) · [Documentation](#documentation)
+
+## Why it is worth a look
+
+Sending a code to a phone is easy. Doing it safely, cheaply and provably is the hard part, and this project is built around that. Everything below is enforced by an automated test, not just described.
+
+- **Race conditions are handled, and proven.** Two simultaneous requests for the same user cannot leave two valid codes behind (a Postgres advisory lock), and parallel guesses cannot exceed the attempt limit (an atomic claim). Dedicated concurrency tests hit these paths.
+- **Tenant isolation is tested against attackers, not just happy paths.** Attack tests are generated from the list of registered routes, so a new route with no authentication or no tenant check fails the build automatically.
+- **Cost is protected, not just security.** SMS-pumping fraud burns money, so there are per-phone, per-IP, per-country and per-tenant caps, plus a risk engine that can block suspicious requests.
+- **Secrets never leak.** Codes, keys and phone numbers are redacted from logs and error reports, and the test suite scans the repository and the logs for them. The server refuses to start with weak or reused secrets.
+- **It tells the truth about itself.** The benchmark write-up reports a modest 10 to 16% gain, calls its own noise out, and says what is not proven. The README's status table separates "tested for real" from "tested against a fake".
+- **Deployment is built to be recoverable.** A backup counts only after a restore test proves it, and that test is shown to fail on a damaged backup. Production mode refuses to run on fake delivery.
+- **It runs end to end with one command,** and CI boots the whole stack on every push.
 
 ## Features
 
@@ -127,6 +139,35 @@ Replace `APP_ID` and `API_KEY` with the values from the earlier responses; do no
 - **Webhooks** are signed and carry `otp.verified`, `device.new`, `risk.challenged`, `risk.blocked`, `delivery.sent`, `delivery.delivered` and `delivery.failed`.
 - **Full reference:** `GET /docs` (Swagger UI) or `GET /openapi.json`.
 
+## Command reference
+
+All commands run from the project root.
+
+| Goal | Command |
+|---|---|
+| Install dependencies | `npm install` |
+| Start Postgres, Redis and Mailpit for development | `docker compose up -d` (stop: `docker compose down`) |
+| Create or update the database tables | `cd apps/server && npx prisma migrate dev` |
+| Browse the database | `cd apps/server && npx prisma studio` |
+| Run the API / worker / dashboard / demo | `npm run dev:api` / `npm run dev:worker` / `npm run dev:dashboard` / `npm run dev:demo` |
+| Create the demo application and key | `npm run demo:setup` (add `-- --force` to start over) |
+| Run the whole stack in Docker | `docker compose -f docker-compose.stack.yml up --build` |
+| Type-check everything | `npm run typecheck` |
+| Lint the two Next.js apps | `npm run lint` |
+| Format the code | `npm run format` |
+| Unit, integration and security tests | `npm test` (one file: `npm test -w server -- otp-flow`) |
+| Tests with the coverage floor | `npm run test:coverage` |
+| Browser end-to-end tests | `npm run test:e2e` |
+| Types, then all tests | `npm run test:all` |
+| Plain-JavaScript backend build | `npm run build:backend` |
+| Load test, then compare two runs | `npm run bench -- --label my-run`, then `node scripts/bench/report.mjs --compare baseline my-run` |
+| Back up the database (on the server) | `./deploy/scripts/backup.sh` |
+| Prove the newest backup restores | `./deploy/scripts/restore-test.sh` |
+| Restore into a new database | `./deploy/scripts/restore.sh <dump file> <new database name>` |
+| Deploy the latest `main` (on the server) | `./deploy/scripts/deploy.sh` |
+| Review or create the AWS resources | `cd deploy/terraform && terraform plan -var-file=staging.tfvars` (then `apply`) |
+| Check a running API | `curl localhost:4000/health` and `curl localhost:4000/health/ready` |
+
 ## Configuration
 
 Settings come from environment variables, validated at startup: the server refuses to start with anything missing, weak, reused or unsafe. The annotated template is [apps/server/.env.example](apps/server/.env.example).
@@ -145,7 +186,59 @@ Settings come from environment variables, validated at startup: the server refus
 
 `NODE_ENV=production` additionally refuses the mock provider, mock outbox and private webhook URLs.
 
+## Tech stack
+
+| Layer | Technology | Why this choice |
+|---|---|---|
+| Monorepo | Turborepo, npm workspaces | One repository for the API, worker, dashboard and demo, with shared tooling |
+| Language | TypeScript on Node.js 24 | One language end to end; Zod schemas double as runtime validation and the OpenAPI spec |
+| API | Fastify 5 | Fast, and its hooks fit auth, rate limiting and metrics cleanly |
+| Database | PostgreSQL 16 with Prisma 6 | Transactions and advisory locks for the "one active code" guarantee; typed queries; migrations |
+| Cache, rate limits, queue storage | Redis | Atomic counters (Lua) for rate limits; BullMQ's storage |
+| Background jobs | BullMQ, separate worker app | The API answers immediately; sending happens off the request path, with retries and backoff |
+| Providers | Twilio (SMS, WhatsApp, voice), SMTP (email), a mock | One interface, so a channel or provider can be swapped or faked in tests |
+| Dashboard | Next.js 16 (React 19) | Server actions keep secrets on the server; tokens live in httpOnly cookies |
+| Validation and docs | Zod, generated OpenAPI 3, Swagger UI | One definition of every request, so the spec cannot drift from the code |
+| Testing | Vitest, Playwright, autocannon | Unit, integration and security tests; real browsers; load tests |
+| Infrastructure | Docker, Docker Compose, Terraform, Nginx | Reproducible images; a one-command stack; reviewed, versioned AWS infrastructure |
+| CI/CD | GitHub Actions | Tests, end-to-end, audit, secret scan and image build on every push |
+| Monitoring | Prometheus metrics, structured JSON logs, Sentry | See load and errors without exposing personal data |
+
 ## Architecture
+
+```
+Callers                                OTPlease                                          Outside world
+-------                                --------                                          -------------
+Developer's backend --+
+Demo shop ------------+-- API key --->  API (Fastify) ---------> Postgres
+Dashboard -- admin token ------------>    |      |               tenants, users, hashed codes,
+                                          |      |               sessions, deliveries, audit log
+                                          |      +-- rate limits, lockouts --> Redis
+                                          |
+                                          +-- enqueue a job ---------------> Redis (BullMQ queue)
+                                                                                 |
+                                                                                 v
+                                          Worker (BullMQ) --- send ---> Twilio / SMTP / mock --> the user
+                                                 ^                              |
+                                                 +------ signed status callback +--> API updates the delivery
+
+In staging and production, Nginx terminates HTTPS in front of the API, dashboard and demo, and passes one trusted
+proxy hop. Health and metrics feed monitoring; unexpected errors go to Sentry.
+```
+
+**Requesting a code** (`POST /applications/:id/otp/request`)
+1. Authenticate the API key and check its scope and application. Repeated failures lock the IP out.
+2. Count the request against the per-phone, per-country, per-IP and per-tenant limits in Redis. Over a limit: `429`.
+3. Compute device and IP signals and run the risk engine; a `block` in enforce mode returns `403`.
+4. In one Postgres transaction under an advisory lock, retire the user's old code and store the new one (only its hash).
+5. Record the delivery, put a job on the queue (the code is encrypted inside it) and reply `202` immediately.
+6. The worker decrypts the job, sends through the first channel of the chain, falls back on failure, retries with backoff, and updates the delivery; Twilio's signed callback later marks it `delivered`. Webhooks fire on each step.
+
+**Verifying a code** (`POST /applications/:id/otp/verify`): rate limit, then one query for the newest unused code, an atomic attempt claim, a constant-time hash comparison and a single-use consume, then a session is created (JWT access token plus a rotating refresh token) and device and IP are recorded.
+
+**Data model** (PostgreSQL): `Application` (the tenant) owns `User`, `ApiKey`, `OtpCode`, `Session`, `Delivery`, `Device`, `SeenIp`, `RiskConfig`, `RiskDecision`, `WebhookEndpoint`, `WebhookLog` and `AuditLog`. Every tenant-owned row carries its application id (the audit log's is empty only for platform-level events), and every query that returns tenant data is scoped by it.
+
+**Repository layout**
 
 | Path | What it is |
 |---|---|
@@ -159,8 +252,6 @@ Settings come from environment variables, validated at startup: the server refus
 | `scripts/` | Backend bundler, demo setup, benchmark harness, CI helpers |
 | `docs/` | Deployment, monitoring and benchmark documents |
 | `.github/workflows/` | CI and the staging deploy workflow |
-
-Stack: Turborepo with npm workspaces, TypeScript on Node.js, Fastify, PostgreSQL 16 with Prisma 6, Redis, BullMQ, Zod, Next.js, Vitest and Playwright, Docker, GitHub Actions, Terraform.
 
 ## Security
 
