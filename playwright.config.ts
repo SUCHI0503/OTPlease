@@ -13,7 +13,8 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   timeout: 60_000,
   expect: { timeout: 10_000 },
-  reporter: [["list"], ["html", { open: "never", outputFolder: "tests/e2e/report" }]],
+  // In CI, "github" also turns each failed test into an annotation on the run, so the reason is visible without downloading logs
+  reporter: [["list"], ...(process.env.CI ? [["github"] as ["github"]] : []), ["html", { open: "never", outputFolder: "tests/e2e/report" }]],
   outputDir: "tests/e2e/results",
   use: {
     channel: process.env.PW_CHANNEL === "chromium" ? undefined : (process.env.PW_CHANNEL ?? (process.env.CI ? undefined : "chrome")),
