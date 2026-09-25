@@ -1,0 +1,41 @@
+# Deploys main to the staging server once CI has passed on it. Needs three secrets in the "staging" environment
+# (GitHub -> Settings -> Environments -> staging): STAGING_HOST, STAGING_USER, STAGING_SSH_KEY.
+name: Deploy staging
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Update the staging server
+    # Only after a green CI run on main, or when started by hand
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 15
+    steps:
+      - name: Set up SSH
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          umask 077
+          printf '%s\n' "$STAGING_SSH_KEY" > ~/.ssh/id_deploy
+          ssh-keyscan -H "$STAGING_HOST" >> ~/.ssh/known_hosts
+      - name: Deploy (pulls main, rebuilds, waits for the health check)
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+        run: ssh -i ~/.ssh/id_deploy "$STAGING_USER@$STAGING_HOST" 'cd ~/otplease && ./deploy/scripts/deploy.sh'
