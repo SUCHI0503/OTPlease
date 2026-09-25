@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import nodemailer from "nodemailer";
-import { EmailProvider, type MailTransport } from "../../../apps/server/src/providers/email";
+import { EmailProvider, smtpTransportOptions, type MailTransport } from "../../../apps/server/src/providers/email";
 
 const SMTP = { host: "smtp.invalid", port: 25 };
 const FROM = "OTPlease <no-reply@otplease.local>";
@@ -58,5 +58,20 @@ describe("EmailProvider", () => {
     // whatever nodemailer does with it, no separate Bcc header may exist
     expect(message.bcc).toBeUndefined();
     expect(JSON.stringify(message.headers ?? {})).not.toMatch(/bcc/i);
+  });
+});
+
+describe("smtpTransportOptions", () => {
+  it("adds no login for a local server like Mailpit", () => {
+    expect(smtpTransportOptions({ host: "localhost", port: 1025 })).toEqual({ host: "localhost", port: 1025, secure: false });
+  });
+
+  it("requires STARTTLS on port 587 when a login is used", () => {
+    const o = smtpTransportOptions({ host: "smtp.example.com", port: 587, user: "u", pass: "p" });
+    expect(o).toMatchObject({ secure: false, requireTLS: true, auth: { user: "u", pass: "p" } });
+  });
+
+  it("uses implicit TLS on port 465", () => {
+    expect(smtpTransportOptions({ host: "smtp.example.com", port: 465, user: "u", pass: "p" })).toMatchObject({ secure: true, requireTLS: false });
   });
 });

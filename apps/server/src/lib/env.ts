@@ -74,6 +74,9 @@ const envSchema = z.object({
   // Optional SMTP (local: Mailpit). Without it, the email channel falls back to the mock provider.
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().int().positive().optional(),
+  // Login for a real mail service (Gmail app password, SES, Resend...). Local Mailpit needs neither.
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
   MAIL_FROM: z.string().default("OTPlease <no-reply@otplease.local>"),
 });
 
@@ -87,6 +90,9 @@ const checkedSchema = envSchema.superRefine((v, ctx) => {
     if (new Set(value).size < 10 || /^(change|secret|password|example|test|default)/i.test(value)) {
       ctx.addIssue({ code: "custom", path: [name], message: `${name} looks like a placeholder; generate one with: openssl rand -hex 32` });
     }
+  }
+  if (Boolean(v.SMTP_USER) !== Boolean(v.SMTP_PASS)) {
+    ctx.addIssue({ code: "custom", path: ["SMTP_PASS"], message: "SMTP_USER and SMTP_PASS must be set together" });
   }
   const twilioSet = v.TWILIO_ACCOUNT_SID || v.TWILIO_AUTH_TOKEN;
   if (twilioSet && !(v.TWILIO_ACCOUNT_SID && v.TWILIO_AUTH_TOKEN)) {
