@@ -1,3 +1,4 @@
+import { env } from "../../server/src/lib/env";
 import { prisma } from "../../server/src/lib/prisma";
 import { buildProviders } from "../../server/src/providers";
 import { startCleanupSchedule } from "./cleanup";
@@ -6,6 +7,7 @@ import { createWebhookWorker } from "./webhook-worker";
 import { createWebhookEmitter, createWebhookQueue } from "../../server/src/queue/webhook-queue";
 
 const log = (msg: string) => console.log(`[worker] ${msg}`);
+if (env.ALLOW_MOCK_PROVIDERS) log("STAGING: WhatsApp, SMS and voice use the mock provider and are NOT delivered");
 
 const webhookQueue = createWebhookQueue();
 const otpWorker = createOtpWorker(buildProviders(), createWebhookEmitter(prisma, webhookQueue));

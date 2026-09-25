@@ -101,6 +101,10 @@ Full reference: `GET /docs` (Swagger UI) or `GET /openapi.json`.
 
 **The demo app** (`apps/demo`, port 3002) is a small product that signs users in with OTPlease. It doubles as the reference integration: all API calls are in `apps/demo/lib/otplease.ts`, the API key stays on the server, tokens are kept in httpOnly cookies, and the visitor's device and IP are forwarded so OTPlease can spot new devices.
 
+## Deployment
+
+Staging on AWS (Terraform, Docker, Nginx with HTTPS, daily backups with a tested restore, deploys after CI passes) is described in [docs/deployment.md](docs/deployment.md).
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request, with four jobs: types + unit/integration/security tests with the coverage floor, the Playwright end-to-end suite, a dependency audit plus a gitleaks secret scan over the whole history, and a Docker build that boots the full stack and smoke-tests it. CI has no real credentials: it generates random test secrets (`scripts/ci/make-test-env.mjs`) and always uses the mock provider. The `npm audit` step fails on critical findings in production dependencies and warns on high ones (today: `deepmerge-ts` inside the Prisma CLI, fixed only by a Prisma major upgrade).

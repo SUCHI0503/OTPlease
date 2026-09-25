@@ -80,6 +80,20 @@ describe("startup refuses unsafe configuration", () => {
     expect(r.output).toMatch(/mock provider is not allowed/);
   }, SLOW);
 
+  it("allows mock phone channels in production only for staging, and only with real email", () => {
+    const prod = { ...SECRETS, NODE_ENV: "production", WEBHOOK_ALLOW_PRIVATE_URLS: "false", TWILIO_ACCOUNT_SID: undefined, TWILIO_AUTH_TOKEN: undefined };
+    const smtp = { SMTP_HOST: "smtp.example.com", SMTP_PORT: "587" };
+    expect(boot({ ...prod, ...smtp, DEPLOY_ENV: "staging", ALLOW_MOCK_PROVIDERS: "true" }).ok).toBe(true);
+    const noEmail = boot({ ...prod, SMTP_HOST: undefined, DEPLOY_ENV: "staging", ALLOW_MOCK_PROVIDERS: "true" });
+    expect(noEmail.ok).toBe(false);
+    expect(noEmail.output).toMatch(/needs real email/);
+    const live = boot({ ...prod, ...smtp, DEPLOY_ENV: "production", ALLOW_MOCK_PROVIDERS: "true" });
+    expect(live.ok).toBe(false);
+    expect(live.output).toMatch(/only allowed when DEPLOY_ENV=staging/);
+    // Without the switch, staging still cannot fall back to the mock
+    expect(boot({ ...prod, ...smtp, DEPLOY_ENV: "staging" }).ok).toBe(false);
+  }, SLOW);
+
   it("refuses to start with a missing required secret", () => {
     for (const name of Object.keys(SECRETS)) {
       const r = boot({ ...SECRETS, [name]: undefined });
@@ -181,7 +195,7 @@ describe("no secrets in the repository", () => {
   const tracked = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], { cwd: ROOT, encoding: "utf8" })
     .split("\n")
     .filter(Boolean)
-    .filter((f) => !/(package-lock\.json|\.(png|jpg|ico|woff2?|svg))$/.test(f));
+    .filter((f) => !/(package-lock\.json|\.terraform\.lock\.hcl|\.(png|jpg|ico|woff2?|svg))$/.test(f));
 
   it("does not track any .env file except examples", () => {
     const envFiles = tracked.filter((f) => /(^|\/)\.env(\..+)?$/.test(f) && !f.endsWith(".env.example"));

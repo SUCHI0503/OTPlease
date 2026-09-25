@@ -62,6 +62,12 @@ const envSchema = z.object({
   // Dev/test only: the mock provider also writes each message to the Redis list "mock:outbox", so an
   // end-to-end test in another process can read the code. Refused in production.
   MOCK_OUTBOX_REDIS: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  // Which deployment this is. Only "staging" may run production mode on mock phone channels (see ALLOW_MOCK_PROVIDERS).
+  DEPLOY_ENV: z.enum(["staging", "production"]).default("production"),
+  // Staging only: lets a production-mode server use the mock provider for WhatsApp, SMS and voice, so the whole
+  // deployment can be tested before a paid Twilio account exists. Messages on those channels are NOT delivered.
+  // Email must still be real (SMTP), or nobody could receive a code.
+  ALLOW_MOCK_PROVIDERS: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
   // Lets webhooks point at localhost/private addresses. Local dev and tests only.
   WEBHOOK_ALLOW_PRIVATE_URLS: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
   // Optional Twilio (SMS, WhatsApp, Voice). Without it those channels use the mock provider.
@@ -107,8 +113,17 @@ const checkedSchema = envSchema.superRefine((v, ctx) => {
     ctx.addIssue({ code: "custom", path: ["MOCK_OUTBOX_REDIS"], message: "must be false in production (it stores OTP codes in plain text)" });
   }
   // The mock provider must never be the real delivery path in production
-  if (v.NODE_ENV === "production" && !(v.TWILIO_ACCOUNT_SID && v.SMTP_HOST)) {
-    ctx.addIssue({ code: "custom", path: ["TWILIO_ACCOUNT_SID"], message: "production requires Twilio and SMTP settings (mock provider is not allowed)" });
+  if (v.ALLOW_MOCK_PROVIDERS && v.NODE_ENV === "production" && v.DEPLOY_ENV !== "staging") {
+    ctx.addIssue({ code: "custom", path: ["ALLOW_MOCK_PROVIDERS"], message: "only allowed when DEPLOY_ENV=staging (production must deliver for real)" });
+  }
+  if (v.NODE_ENV === "production") {
+    if (v.ALLOW_MOCK_PROVIDERS && v.DEPLOY_ENV === "staging") {
+      if (!v.SMTP_HOST) {
+        ctx.addIssue({ code: "custom", path: ["SMTP_HOST"], message: "staging on mock phone channels still needs real email (SMTP), or no code could be received" });
+      }
+    } else if (!(v.TWILIO_ACCOUNT_SID && v.SMTP_HOST)) {
+      ctx.addIssue({ code: "custom", path: ["TWILIO_ACCOUNT_SID"], message: "production requires Twilio and SMTP settings (mock provider is not allowed)" });
+    }
   }
 });
 
