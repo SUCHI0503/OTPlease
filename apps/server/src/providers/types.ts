@@ -1,8 +1,5 @@
 export type OtpChannel = "sms" | "whatsapp" | "voice" | "email";
 
-/** Channels that deliver to a phone number (and so can be chained as fallbacks) */
-export const PHONE_CHANNELS = ["sms", "whatsapp", "voice"] as const;
-
 export interface OtpMessage {
   channel: OtpChannel;
   /** E.164 phone for sms/whatsapp/voice, email address for email */

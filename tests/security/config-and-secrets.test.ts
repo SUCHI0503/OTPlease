@@ -63,6 +63,11 @@ describe("startup refuses unsafe configuration", () => {
     expect(boot({ ...SECRETS, CORS_ORIGINS: "https://app.example.com, https://admin.example.com" }).ok).toBe(true);
   }, SLOW);
 
+  it("treats blank optional settings as not set, so a test or a blank file line can switch a provider off", () => {
+    const blank = { SMTP_HOST: "", SMTP_PORT: "", SMTP_USER: "", SMTP_PASS: "", TWILIO_ACCOUNT_SID: "", TWILIO_AUTH_TOKEN: "", TWILIO_WHATSAPP_CONTENT_SID: "" };
+    expect(boot({ ...SECRETS, ...blank }).ok).toBe(true);
+  }, SLOW);
+
   it("refuses to start in production with private webhook URLs allowed", () => {
     const r = boot({ ...SECRETS, NODE_ENV: "production", WEBHOOK_ALLOW_PRIVATE_URLS: "true", TWILIO_ACCOUNT_SID: "ACx", TWILIO_AUTH_TOKEN: "x", SMTP_HOST: "smtp.example.com", SMTP_PORT: "587" });
     expect(r.ok).toBe(false);

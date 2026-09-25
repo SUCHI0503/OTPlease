@@ -112,7 +112,9 @@ const checkedSchema = envSchema.superRefine((v, ctx) => {
   }
 });
 
-const parsed = checkedSchema.safeParse(process.env);
+// A blank value ("KEY=" in a file, or set to "" to switch a setting off) means the same as not set
+const raw = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== ""));
+const parsed = checkedSchema.safeParse(raw);
 
 if (!parsed.success) {
   console.error("Invalid environment variables:");

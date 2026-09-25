@@ -3,6 +3,7 @@
   "ui": "tui",
   "tasks": {
     "build": {
+      "env": ["NEXT_STANDALONE"],
       "dependsOn": [
         "^build"
       ],

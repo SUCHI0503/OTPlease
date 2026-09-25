@@ -43,7 +43,10 @@ export default async function globalSetup() {
 
   // Never call real providers from a test: drop Twilio and SMTP, use the mock with the Redis outbox
   const stackEnv: Record<string, string> = { ...(process.env as Record<string, string>), ...fileEnv, NODE_ENV: "test", MOCK_OUTBOX_REDIS: "true", WEBHOOK_ALLOW_PRIVATE_URLS: "true" };
-  for (const k of Object.keys(stackEnv)) if (k.startsWith("TWILIO_") || k.startsWith("SMTP_")) delete stackEnv[k];
+  // Blank, not just deleted: Prisma loads apps/server/.env by itself and would fill in any variable that is missing
+  for (const k of [...Object.keys(stackEnv), "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_SMS_FROM", "TWILIO_WHATSAPP_FROM", "TWILIO_VOICE_FROM", "TWILIO_WHATSAPP_CONTENT_SID", "TWILIO_STATUS_CALLBACK_URL", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS"]) {
+    if (k.startsWith("TWILIO_") || k.startsWith("SMTP_")) stackEnv[k] = "";
+  }
 
   mkdirSync(LOGS, { recursive: true });
 
