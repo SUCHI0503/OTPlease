@@ -101,6 +101,10 @@ Full reference: `GET /docs` (Swagger UI) or `GET /openapi.json`.
 
 **The demo app** (`apps/demo`, port 3002) is a small product that signs users in with OTPlease. It doubles as the reference integration: all API calls are in `apps/demo/lib/otplease.ts`, the API key stays on the server, tokens are kept in httpOnly cookies, and the visitor's device and IP are forwarded so OTPlease can spot new devices.
 
+## Monitoring
+
+Health checks, Prometheus metrics and privacy-scrubbed Sentry error reports: [docs/monitoring.md](docs/monitoring.md).
+
 ## Deployment
 
 Staging on AWS (Terraform, Docker, Nginx with HTTPS, daily backups with a tested restore, deploys after CI passes) is described in [docs/deployment.md](docs/deployment.md).

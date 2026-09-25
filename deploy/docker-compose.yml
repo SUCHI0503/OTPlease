@@ -14,6 +14,8 @@ x-backend-env: &backend-env
   # One proxy (Nginx) sits in front: trust exactly one hop, or every client would look like Nginx
   TRUST_PROXY: "1"
   LOG_LEVEL: ${LOG_LEVEL:-info}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  RELEASE: ${RELEASE:-}
   SMTP_HOST: ${SMTP_HOST:-}
   SMTP_PORT: ${SMTP_PORT:-}
   SMTP_USER: ${SMTP_USER:-}

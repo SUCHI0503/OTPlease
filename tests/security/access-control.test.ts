@@ -11,7 +11,7 @@ const admin = { "x-admin-token": ADMIN_TOKEN, ...NOAUTH };
 const ZERO = "00000000-0000-4000-8000-000000000000";
 
 // Routes that are meant to be reachable without an API key or admin token
-const PUBLIC = new Set(["GET /health", "GET /docs", "GET /openapi.json", "POST /auth/refresh"]);
+const PUBLIC = new Set(["GET /health", "GET /health/ready", "GET /docs", "GET /openapi.json", "POST /auth/refresh"]);
 
 beforeAll(async () => {
   if (!process.env.DATABASE_URL?.includes("otplease_test")) {

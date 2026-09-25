@@ -62,6 +62,9 @@ const envSchema = z.object({
   // Dev/test only: the mock provider also writes each message to the Redis list "mock:outbox", so an
   // end-to-end test in another process can read the code. Refused in production.
   MOCK_OUTBOX_REDIS: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  // Optional error reporting (Sentry). Unset means reporting is off. RELEASE tags reports with the deployed version.
+  SENTRY_DSN: z.string().url().optional(),
+  RELEASE: z.string().optional(),
   // Which deployment this is. Only "staging" may run production mode on mock phone channels (see ALLOW_MOCK_PROVIDERS).
   DEPLOY_ENV: z.enum(["staging", "production"]).default("production"),
   // Staging only: lets a production-mode server use the mock provider for WhatsApp, SMS and voice, so the whole

@@ -1,4 +1,5 @@
 import { Worker } from "bullmq";
+import { captureFailure } from "../../server/src/lib/sentry";
 import { prisma } from "../../server/src/lib/prisma";
 import { decrypt } from "../../server/src/lib/secretbox";
 import { OTP_QUEUE, bullConnection, type OtpJobData } from "../../server/src/queue/otp-queue";
@@ -39,6 +40,8 @@ export function createOtpWorker(providers: ProviderRegistry, emit?: WebhookEmitt
         data: { status: isLastAttempt ? "failed" : "queued", attempts, error: lastError },
       });
       if (isLastAttempt) {
+        // lastError holds the channel and the provider's numeric code only, never a phone number or a code
+        captureFailure("otp delivery failed after all retries", { error: lastError.slice(0, 200) });
         await emit?.(failed.applicationId, "delivery.failed", { deliveryId, recipient: failed.toMasked, error: lastError });
       }
       throw new Error(lastError);

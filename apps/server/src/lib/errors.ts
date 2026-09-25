@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodError } from "zod";
+import { captureError } from "./sentry";
 
 export function sendError(
   reply: FastifyReply,
@@ -35,6 +36,7 @@ export function registerErrorHandler(app: FastifyInstance) {
       { type: err.name, code: err.code, stack: err.stack?.split("\n").slice(1).join("\n") },
       "unhandled error"
     );
+    captureError(error, { route: request.routeOptions?.url ?? "unmatched" });
     return sendError(reply, 500, "INTERNAL_ERROR", "Something went wrong");
   });
 

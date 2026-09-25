@@ -1,6 +1,8 @@
 import { env } from "./lib/env";
+import { flushSentry, initSentry } from "./lib/sentry";
 import { buildApp } from "./app";
 
+initSentry("api");
 const app = buildApp();
 
 if (env.ALLOW_MOCK_PROVIDERS) {
@@ -16,6 +18,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     closing = true;
     app.log.info({ signal }, "shutting down");
     await app.close();
+    await flushSentry();
     process.exit(0);
   });
 }
