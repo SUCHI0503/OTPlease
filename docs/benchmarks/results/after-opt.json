@@ -1,0 +1,471 @@
+{
+  "label": "after-opt",
+  "startedAt": "2026-09-25T20:45:43.811Z",
+  "durationSeconds": 20,
+  "environment": {
+    "machine": "Intel(R) Core(TM) i5-5350U CPU @ 1.80GHz, 4 logical CPUs, 8 GB RAM",
+    "os": "Darwin 21.6.0",
+    "node": "v24.21.0",
+    "postgres": "PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2)",
+    "redis": "7.4.11",
+    "dockerVm": "4 CPUs, 4104380416 bytes",
+    "apiProcess": "node apps/server/dist/index.js (single process, single thread)",
+    "workerProcess": "node apps/worker/dist/index.js (concurrency 10 per queue)",
+    "prismaPoolSize": "default: 9 connections (logical CPUs x 2 + 1)",
+    "logLevel": "info",
+    "provider": "mock (no real messages are sent)",
+    "systemAtStart": "load average 3.8 / 7.8 / 9.6, total = 3072.00M  used = 2131.25M  free = 940.75M  (encrypted)",
+    "rateLimits": "raised to 10,000,000 per window so limiters are not measured",
+    "loadGenerator": "autocannon 8.0.0, same machine"
+  },
+  "scenarios": {
+    "me": {
+      "title": "GET /auth/me (session check: JWT + one DB query)",
+      "levels": [
+        {
+          "targetRps": 10,
+          "connections": 10,
+          "seconds": 20,
+          "completed": 200,
+          "achievedRps": 10,
+          "success2xx": 200,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "200": 200
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 15.5,
+            "p50": 15.500535,
+            "p90": 20.359783,
+            "p95": 22.697258,
+            "p99": 25.263567,
+            "max": 26.221573
+          },
+          "cpuCores": {
+            "api": 0.04,
+            "worker": 0,
+            "postgres": 0.01,
+            "redis": 0.01,
+            "loadGenerator": 0.01
+          },
+          "apiMemoryMb": 117,
+          "swapUsedMbAtEnd": 2131.25,
+          "saturated": false
+        },
+        {
+          "targetRps": 50,
+          "connections": 10,
+          "seconds": 20,
+          "completed": 1000,
+          "achievedRps": 50,
+          "success2xx": 1000,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "200": 1000
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 18.7,
+            "p50": 16.968871,
+            "p90": 26.351721,
+            "p95": 32.077411,
+            "p99": 45.466498,
+            "max": 67.527901
+          },
+          "cpuCores": {
+            "api": 0.15,
+            "worker": 0,
+            "postgres": 0.07,
+            "redis": 0.01,
+            "loadGenerator": 0.02
+          },
+          "apiMemoryMb": 141,
+          "swapUsedMbAtEnd": 2131.25,
+          "saturated": false
+        },
+        {
+          "targetRps": 100,
+          "connections": 10,
+          "seconds": 20,
+          "completed": 2070,
+          "achievedRps": 103.5,
+          "success2xx": 2070,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "200": 2070
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 23.67,
+            "p50": 13.138318,
+            "p90": 49.903036,
+            "p95": 74.325279,
+            "p99": 195.751998,
+            "max": 440.642864
+          },
+          "cpuCores": {
+            "api": 0.28,
+            "worker": 0,
+            "postgres": 0.1,
+            "redis": 0.03,
+            "loadGenerator": 0.03
+          },
+          "apiMemoryMb": 122,
+          "swapUsedMbAtEnd": 2147.75,
+          "saturated": false
+        },
+        {
+          "targetRps": 500,
+          "connections": 50,
+          "seconds": 20,
+          "completed": 10003,
+          "achievedRps": 500.1,
+          "success2xx": 10003,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "200": 10003
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 76.32,
+            "p50": 74.180847,
+            "p90": 99.571614,
+            "p95": 114.138023,
+            "p99": 142.841491,
+            "max": 173.239444
+          },
+          "cpuCores": {
+            "api": 1.05,
+            "worker": 0.01,
+            "postgres": 0.82,
+            "redis": 0.03,
+            "loadGenerator": 0.11
+          },
+          "apiMemoryMb": 189,
+          "swapUsedMbAtEnd": 2147.75,
+          "saturated": false
+        }
+      ]
+    },
+    "otp_request": {
+      "title": "POST /otp/request (creates user + code, queues the message)",
+      "levels": [
+        {
+          "targetRps": 10,
+          "connections": 10,
+          "seconds": 20,
+          "completed": 200,
+          "achievedRps": 10,
+          "success2xx": 200,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "202": 200
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 134.96,
+            "p50": 123.277798,
+            "p90": 197.452742,
+            "p95": 230.111666,
+            "p99": 250.483703,
+            "max": 250.906208
+          },
+          "cpuCores": {
+            "api": 0.15,
+            "worker": 0.05,
+            "postgres": 0.09,
+            "redis": 0.04,
+            "loadGenerator": 0.01
+          },
+          "apiMemoryMb": 191,
+          "swapUsedMbAtEnd": 2147.75,
+          "saturated": false,
+          "queue": {
+            "sent": 210,
+            "stillQueued": 0,
+            "failed": 0,
+            "drainedAfterMs": 27,
+            "lagMs": {
+              "p50": 40,
+              "p95": 66,
+              "p99": 77.72999999999999,
+              "max": 83
+            }
+          }
+        },
+        {
+          "targetRps": 50,
+          "connections": 10,
+          "seconds": 20,
+          "completed": 991,
+          "achievedRps": 49.5,
+          "success2xx": 991,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "202": 991
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 178.92,
+            "p50": 173.108843,
+            "p90": 224.576938,
+            "p95": 253.464316,
+            "p99": 433.683312,
+            "max": 476.453828
+          },
+          "cpuCores": {
+            "api": 0.68,
+            "worker": 0.24,
+            "postgres": 1.2,
+            "redis": 0.48,
+            "loadGenerator": 0.02
+          },
+          "apiMemoryMb": 256,
+          "swapUsedMbAtEnd": 2115.75,
+          "saturated": false,
+          "queue": {
+            "sent": 1001,
+            "stillQueued": 0,
+            "failed": 0,
+            "drainedAfterMs": 25,
+            "lagMs": {
+              "p50": 35,
+              "p95": 82,
+              "p99": 164,
+              "max": 325
+            }
+          }
+        },
+        {
+          "targetRps": 100,
+          "connections": 10,
+          "seconds": 20,
+          "completed": 1173,
+          "achievedRps": 58.6,
+          "success2xx": 1173,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "202": 1173
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 169.89,
+            "p50": 164.760282,
+            "p90": 203.591804,
+            "p95": 226.187386,
+            "p99": 253.906792,
+            "max": 277.498841
+          },
+          "cpuCores": {
+            "api": 0.8,
+            "worker": 0.28,
+            "postgres": 1.15,
+            "redis": 0.47,
+            "loadGenerator": 0.02
+          },
+          "apiMemoryMb": 263,
+          "swapUsedMbAtEnd": 2115.75,
+          "saturated": true,
+          "queue": {
+            "sent": 1193,
+            "stillQueued": 0,
+            "failed": 0,
+            "drainedAfterMs": 272,
+            "lagMs": {
+              "p50": 30,
+              "p95": 53,
+              "p99": 68.07999999999993,
+              "max": 221
+            }
+          }
+        },
+        {
+          "targetRps": 500,
+          "connections": 50,
+          "seconds": 20,
+          "completed": 1321,
+          "achievedRps": 66,
+          "success2xx": 1321,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "202": 1321
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 741.71,
+            "p50": 729.799567,
+            "p90": 898.283565,
+            "p95": 936.352243,
+            "p99": 973.071733,
+            "max": 1117.758005
+          },
+          "cpuCores": {
+            "api": 0.8,
+            "worker": 0.28,
+            "postgres": 1.41,
+            "redis": 0.4,
+            "loadGenerator": 0.03
+          },
+          "apiMemoryMb": 293,
+          "swapUsedMbAtEnd": 2115.75,
+          "saturated": true,
+          "queue": {
+            "sent": 1364,
+            "stillQueued": 0,
+            "failed": 0,
+            "drainedAfterMs": 278,
+            "lagMs": {
+              "p50": 120,
+              "p95": 182,
+              "p99": 231.73999999999978,
+              "max": 260
+            }
+          }
+        }
+      ]
+    },
+    "otp_verify": {
+      "title": "POST /otp/verify (correct code: creates a session)",
+      "levels": [
+        {
+          "targetRps": 10,
+          "connections": 10,
+          "seconds": 20,
+          "completed": 200,
+          "achievedRps": 10,
+          "success2xx": 200,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "200": 200
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 109.1,
+            "p50": 96.615548,
+            "p90": 153.819506,
+            "p95": 158.67807,
+            "p99": 173.538738,
+            "max": 176.94103
+          },
+          "cpuCores": {
+            "api": 0.12,
+            "worker": 0,
+            "postgres": 0.06,
+            "redis": 0.02,
+            "loadGenerator": 0.01
+          },
+          "apiMemoryMb": 298,
+          "swapUsedMbAtEnd": 2115.75,
+          "saturated": false
+        },
+        {
+          "targetRps": 50,
+          "connections": 10,
+          "seconds": 20,
+          "completed": 997,
+          "achievedRps": 49.9,
+          "success2xx": 997,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "200": 997
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 140.15,
+            "p50": 121.717871,
+            "p90": 211.150818,
+            "p95": 274.277659,
+            "p99": 471.445437,
+            "max": 582.752367
+          },
+          "cpuCores": {
+            "api": 0.56,
+            "worker": 0,
+            "postgres": 1.18,
+            "redis": 0.15,
+            "loadGenerator": 0.02
+          },
+          "apiMemoryMb": 292,
+          "swapUsedMbAtEnd": 2115.75,
+          "saturated": false
+        },
+        {
+          "targetRps": 100,
+          "connections": 10,
+          "seconds": 20,
+          "completed": 1823,
+          "achievedRps": 91.2,
+          "success2xx": 1823,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "200": 1823
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 109.14,
+            "p50": 105.796577,
+            "p90": 132.631386,
+            "p95": 141.392205,
+            "p99": 162.130634,
+            "max": 220.015719
+          },
+          "cpuCores": {
+            "api": 1.05,
+            "worker": 0,
+            "postgres": 1.54,
+            "redis": 0.14,
+            "loadGenerator": 0.03
+          },
+          "apiMemoryMb": 290,
+          "swapUsedMbAtEnd": 2115.75,
+          "saturated": true
+        },
+        {
+          "targetRps": 500,
+          "connections": 50,
+          "seconds": 20,
+          "completed": 1897,
+          "achievedRps": 94.8,
+          "success2xx": 1897,
+          "errorRatePct": 0,
+          "statusCodes": {
+            "200": 1897
+          },
+          "errors": 0,
+          "timeouts": 0,
+          "latencyMs": {
+            "mean": 521.33,
+            "p50": 496.98133,
+            "p90": 650.62939,
+            "p95": 703.739873,
+            "p99": 731.748666,
+            "max": 763.427212
+          },
+          "cpuCores": {
+            "api": 1.04,
+            "worker": 0.01,
+            "postgres": 1.24,
+            "redis": 0.14,
+            "loadGenerator": 0.03
+          },
+          "apiMemoryMb": 288,
+          "swapUsedMbAtEnd": 2051.75,
+          "saturated": true
+        }
+      ]
+    }
+  },
+  "finishedAt": "2026-09-25T20:51:21.111Z"
+}

@@ -21,8 +21,9 @@ import { encrypt } from "./lib/secretbox";
 import { validateWebhookUrl } from "./lib/webhook-http";
 import { createOtpQueue, enqueueOtp } from "./queue/otp-queue";
 import type { Redis } from "ioredis";
+import { createMetrics } from "./lib/metrics";
 import { createRedis } from "./lib/redis";
-import { checkRateLimits, defaultRateLimits, peekRateLimit, type RateLimits, type Rule } from "./lib/ratelimit";
+import { checkRateLimits, defaultRateLimits, peekCount, peekRateLimit, type RateLimits, type Rule } from "./lib/ratelimit";
 import { authenticate, createSession, refreshSession, revokeSession } from "./lib/session";
 import { generateOtpCode, hashOtpCode, verifyOtpCode } from "./lib/otp";
 import {
@@ -72,6 +73,7 @@ export function buildApp(
   const otpQueue = createOtpQueue(options.queue);
   const webhookQueue = createWebhookQueue(options.webhookQueue);
   const emit = createWebhookEmitter(prisma, webhookQueue);
+  const metrics = createMetrics();
   const app = Fastify({
     // Only honour X-Forwarded-For when explicitly told we sit behind a trusted proxy
     // A number means "trust this many proxy hops". Fastify supports it at runtime; its typings only list boolean.
@@ -118,6 +120,14 @@ export function buildApp(
   });
 
   registerErrorHandler(app);
+
+  // Duration of every request, labelled with the route template ("/applications/:applicationId/otp/request")
+  app.addHook("onResponse", async (request, reply) => {
+    metrics.httpDuration.observe(
+      { method: request.method, route: request.routeOptions?.url ?? "unmatched", status: String(reply.statusCode) },
+      reply.elapsedTime / 1000
+    );
+  });
 
   // Browsers may only call the API from explicitly listed origins. With none listed no CORS headers are sent
   // at all, so other sites cannot read responses even if they know an API key.
@@ -172,6 +182,8 @@ export function buildApp(
 
   /** True (and a 429 sent) if this IP has guessed credentials wrongly too many times recently. */
   async function lockedOut(request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
+    // Normal requests are not locked out: answer that with a single Redis read, and look up the TTL only when needed
+    if ((await peekCount(redis, failRule(request))) < limits.authFailuresPerIp.limit) return false;
     const { count, ttl } = await peekRateLimit(redis, failRule(request));
     if (count < limits.authFailuresPerIp.limit) return false;
     reply.header("Retry-After", String(ttl));
@@ -260,7 +272,34 @@ export function buildApp(
   app.get("/openapi.json", async () => openApiDocument);
   app.get("/docs", async (_request, reply) => reply.type("text/html").send(DOCS_HTML));
 
+  // Liveness: the process is up and answering. Cheap on purpose: Docker and load balancers call it constantly.
   app.get("/health", async () => ({ status: "ok", service: "otplease-server" }));
+
+  // Readiness: the things a request actually needs are reachable. 503 when any is down, with no internal detail.
+  app.get("/health/ready", async (_request, reply) => {
+    const probe = async (fn: () => Promise<unknown>) => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([fn(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), 2000); })]);
+        return "ok";
+      } catch {
+        return "down";
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const [database, cache] = await Promise.all([probe(() => prisma.$queryRaw`SELECT 1`), probe(() => redis.ping())]);
+    const ready = database === "ok" && cache === "ok";
+    return reply.status(ready ? 200 : 503).send({ status: ready ? "ready" : "degraded", checks: { database, cache } });
+  });
+
+  // Prometheus metrics. Operator only: they show traffic volumes and internals.
+  app.get("/metrics", async (request, reply) => {
+    if (!(await authorizeAdmin(request, reply))) return reply;
+    const counts = await otpQueue.getJobCounts("waiting", "active", "delayed", "failed");
+    for (const [state, count] of Object.entries(counts)) metrics.queueJobs.set({ state }, count);
+    return reply.type(metrics.registry.contentType).send(await metrics.registry.metrics());
+  });
 
   // ---------- Applications (tenants) ----------
   app.post("/applications", async (request, reply) => {
@@ -555,14 +594,16 @@ export function buildApp(
       return reply;
     }
 
-    const application = await prisma.application.findUnique({ where: { id: applicationId } });
-    if (!application) {
-      return sendError(reply, 404, "APPLICATION_NOT_FOUND", "application not found");
-    }
+    // No separate "does the application exist" query: this route accepts only an API key, and a key exists only for
+    // an application that exists. The two reads below do not depend on each other, so they run together.
+    const [riskConfig, existingUser] = await Promise.all([
+      getRiskConfig(prisma, applicationId),
+      // Looked up without creating the user: a blocked request must not leave a new user behind
+      prisma.user.findUnique({ where: { applicationId_phone: { applicationId, phone } } }),
+    ]);
 
     // Per-tenant cost cap. Checked after the per-phone/IP/country limits so requests already refused
     // by those do not burn the tenant's allowance. Applies in every risk mode, including "off".
-    const riskConfig = await getRiskConfig(prisma, applicationId);
     if (
       await rateLimited(reply, [
         {
@@ -576,8 +617,6 @@ export function buildApp(
       return reply;
     }
 
-    // Look the user up without creating them: a blocked request must not leave a new user behind
-    const existingUser = await prisma.user.findUnique({ where: { applicationId_phone: { applicationId, phone } } });
     const signals = await computeSignals(prisma, redis, applicationId, existingUser?.id ?? null, phone, context);
 
     // Risk engine: `block` is enforced here (in enforce mode); `challenge` is passed to the caller to act on
@@ -645,6 +684,7 @@ export function buildApp(
     });
     await enqueueOtp(otpQueue, { deliveryId: delivery.id, chain, to, code });
 
+    metrics.otpRequests.inc({ channel });
     return reply.status(202).send({ status: "otp_request_accepted", userId: user.id, deliveryId: delivery.id, signals, risk });
   });
 
@@ -664,19 +704,19 @@ export function buildApp(
 
     // Unknown phone and "no active code" return the same error, so callers
     // cannot probe which phone numbers are registered.
-    const user = await prisma.user.findFirst({ where: { applicationId, phone } });
-    const otp = user
-      ? await prisma.otpCode.findFirst({
-          where: { userId: user.id, consumedAt: null },
-          orderBy: { createdAt: "desc" },
-        })
-      : null;
+    // One query: the newest unused code of the user with this phone (the join replaces a separate user lookup)
+    const otp = await prisma.otpCode.findFirst({
+      where: { applicationId, consumedAt: null, user: { applicationId, phone } },
+      orderBy: { createdAt: "desc" },
+    });
 
-    if (!user || !otp) {
+    if (!otp) {
+      metrics.otpVerifications.inc({ result: "not_found" });
       return sendError(reply, 400, "OTP_NOT_FOUND", "no active otp for this user");
     }
 
     if (otp.expiresAt < new Date()) {
+      metrics.otpVerifications.inc({ result: "expired" });
       return sendError(reply, 400, "OTP_EXPIRED", "otp has expired");
     }
 
@@ -687,10 +727,12 @@ export function buildApp(
       data: { attempts: { increment: 1 } },
     });
     if (claimed.count === 0) {
+      metrics.otpVerifications.inc({ result: "locked" });
       return sendError(reply, 429, "OTP_LOCKED", "too many incorrect attempts");
     }
 
     if (!verifyOtpCode(code, otp.codeHash)) {
+      metrics.otpVerifications.inc({ result: "incorrect" });
       return sendError(reply, 400, "OTP_INCORRECT", "incorrect code");
     }
 
@@ -703,12 +745,13 @@ export function buildApp(
       return sendError(reply, 400, "OTP_NOT_FOUND", "no active otp for this user");
     }
 
-    const login = await recordLogin(prisma, applicationId, user.id, context);
-    const tokens = await createSession(prisma, applicationId, user.id);
-    await emit(applicationId, "otp.verified", { userId: user.id });
+    metrics.otpVerifications.inc({ result: "verified" });
+    const login = await recordLogin(prisma, applicationId, otp.userId, context);
+    const tokens = await createSession(prisma, applicationId, otp.userId);
+    await emit(applicationId, "otp.verified", { userId: otp.userId });
     if (login.isNewDevice) {
       await emit(applicationId, "device.new", {
-        userId: user.id,
+        userId: otp.userId,
         deviceId: login.deviceId,
         isFirstDevice: login.isFirstDevice,
         ip: login.ipMasked,
@@ -717,7 +760,7 @@ export function buildApp(
     }
     return reply.status(200).send({
       status: "verified",
-      userId: user.id,
+      userId: otp.userId,
       ...tokens,
       device: { id: login.deviceId, isNew: login.isNewDevice, isFirstDevice: login.isFirstDevice, isNewIp: login.isNewIp },
     });

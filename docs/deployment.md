@@ -91,4 +91,4 @@ it is not backed up.
   `ALLOW_MOCK_PROVIDERS=false` and `DEPLOY_ENV=production`, and fill in the Twilio settings.
 - Send email from your own domain (SPF and DKIM), for example through Amazon SES, not a personal Gmail.
 - Add a production environment with its own server, database and secrets; do not reuse staging's.
-- Monitoring and alerts (Phase 22).
+- Set up the alerts in [monitoring.md](monitoring.md) and add a Sentry project (`SENTRY_DSN`).

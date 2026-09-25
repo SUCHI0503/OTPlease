@@ -75,7 +75,9 @@ export function buildOpenApiDocument() {
   const noContent = { status: "204", response: { description: "Done" } };
   const A = "/applications/{applicationId}";
 
-  add("get", "/health", { summary: "Health check", tag: "System", auth: "none", ok: { status: "200", response: json({ type: "object" }) } });
+  add("get", "/health", { summary: "Liveness: the process is up", tag: "System", auth: "none", ok: { status: "200", response: json({ type: "object" }) } });
+  add("get", "/health/ready", { summary: "Readiness: Postgres and Redis answer (503 with the failing component if not)", tag: "System", auth: "none", ok: { status: "200", response: json({ type: "object" }) } });
+  add("get", "/metrics", { summary: "Prometheus metrics (operator only)", tag: "System", auth: "admin", ok: { status: "200", response: { description: "Prometheus text format", content: { "text/plain": { schema: { type: "string" } } } } } });
 
   add("post", "/applications", { summary: "Create an application (tenant)", tag: "Applications", auth: "admin", body: schemaOf(createApplicationSchema), ok: { status: "201", response: json(ref("Application"), "Created") } });
   add("get", "/applications", { summary: "List applications", tag: "Applications", auth: "admin", ok: { status: "200", response: json({ type: "array", items: ref("Application") }) } });

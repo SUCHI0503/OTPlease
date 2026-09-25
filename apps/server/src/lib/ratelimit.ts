@@ -65,19 +65,29 @@ return {count, redis.call('TTL', KEYS[1])}
 const keyFor = (rule: Rule) =>
   `rl:${rule.name}:${crypto.createHash("sha256").update(rule.subject).digest("hex").slice(0, 32)}`;
 
-/** Counts one hit against every rule. Limited if any rule is over its limit. */
+/**
+ * Counts one hit against every rule. Limited if any rule is over its limit. All rules are sent to Redis together
+ * (one round trip, not one per rule) and every rule is still counted on every call, exactly as before.
+ */
 export async function checkRateLimits(redis: Redis, rules: Rule[]): Promise<LimitResult> {
+  const pipeline = redis.pipeline();
+  for (const rule of rules) pipeline.eval(SCRIPT, 1, keyFor(rule), rule.windowSeconds);
+  const replies = (await pipeline.exec()) ?? [];
+
   let retryAfterSeconds = 0;
-  for (const rule of rules) {
-    const [count, ttl] = (await redis.eval(
-      SCRIPT,
-      1,
-      keyFor(rule),
-      rule.windowSeconds
-    )) as [number, number];
+  replies.forEach(([error, reply], i) => {
+    // A Redis failure must not let a request through: the error propagates and protected routes fail closed
+    if (error) throw error;
+    const [count, ttl] = reply as [number, number];
+    const rule = rules[i]!;
     if (count > rule.limit) retryAfterSeconds = Math.max(retryAfterSeconds, ttl > 0 ? ttl : rule.windowSeconds);
-  }
+  });
   return { limited: retryAfterSeconds > 0, retryAfterSeconds };
+}
+
+/** Just the current count (one Redis command), for the common case where nothing is limited. */
+export async function peekCount(redis: Redis, rule: Rule): Promise<number> {
+  return Number((await redis.get(keyFor(rule))) ?? 0);
 }
 
 /** Reads a counter without counting a hit. Returns the count and seconds left in the window. */

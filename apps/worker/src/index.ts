@@ -1,4 +1,5 @@
 import { env } from "../../server/src/lib/env";
+import { flushSentry, initSentry } from "../../server/src/lib/sentry";
 import { prisma } from "../../server/src/lib/prisma";
 import { buildProviders } from "../../server/src/providers";
 import { startCleanupSchedule } from "./cleanup";
@@ -6,6 +7,7 @@ import { createOtpWorker } from "./otp-worker";
 import { createWebhookWorker } from "./webhook-worker";
 import { createWebhookEmitter, createWebhookQueue } from "../../server/src/queue/webhook-queue";
 
+initSentry("worker");
 const log = (msg: string) => console.log(`[worker] ${msg}`);
 if (env.ALLOW_MOCK_PROVIDERS) log("STAGING: WhatsApp, SMS and voice use the mock provider and are NOT delivered");
 
@@ -24,6 +26,7 @@ log("started: otp-send + webhooks + cleanup");
 async function shutdown() {
   await Promise.all([otpWorker.close(), webhookWorker.close(), webhookQueue.close(), cleanup.worker.close(), cleanup.queue.close()]);
   await prisma.$disconnect();
+  await flushSentry();
   process.exit(0);
 }
 process.on("SIGINT", shutdown);

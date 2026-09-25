@@ -3,6 +3,7 @@
 Real measurements of the OTPlease API, with the method to repeat them.
 
 - [baseline.md](baseline.md): the Phase 18 baseline (the "before" for Phase 22).
+- [phase-22.md](phase-22.md): the Phase 22 optimisation results, and how much to trust them.
 - `results/*.json`: the raw data for each run.
 
 ## Run it
