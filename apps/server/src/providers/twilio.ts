@@ -6,6 +6,11 @@ export interface TwilioConfig {
   authToken: string;
   /** Sender per channel. For WhatsApp sandbox this is the sandbox number, e.g. +14155238886 */
   from: { sms?: string; whatsapp?: string; voice?: string };
+  /**
+   * WhatsApp only lets a business start a conversation with an approved template, and an OTP always is one.
+   * When set (a Content Template SID, HX...), WhatsApp codes are sent through it, with the code as variable {{1}}.
+   */
+  whatsappContentSid?: string;
   /** Public URL Twilio calls with delivery status updates */
   statusCallbackUrl?: string;
 }
@@ -30,6 +35,9 @@ export class TwilioProvider implements OtpProvider {
 
     if (isVoice) {
       body.set("Twiml", voiceTwiml(message.code));
+    } else if (channel === "whatsapp" && this.config.whatsappContentSid) {
+      body.set("ContentSid", this.config.whatsappContentSid);
+      body.set("ContentVariables", JSON.stringify({ "1": message.code }));
     } else {
       body.set("Body", `Your verification code is ${message.code}. It expires in 5 minutes.`);
     }

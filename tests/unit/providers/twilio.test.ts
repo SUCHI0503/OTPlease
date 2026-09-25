@@ -44,6 +44,24 @@ describe("TwilioProvider", () => {
     expect(body.get("From")).toBe("whatsapp:+14155238886");
   });
 
+  it("sends WhatsApp through the approved template when one is configured, and never as free text", async () => {
+    const f = fakeFetch({ ok: true, body: { sid: "SM1" } });
+    const sid = "HX" + "a".repeat(32);
+    await new TwilioProvider({ ...config, whatsappContentSid: sid }, f.impl).send({ channel: "whatsapp", to: PHONE, code: "123456" });
+    const body = f.calls[0]!.init.body as URLSearchParams;
+    expect(body.get("ContentSid")).toBe(sid);
+    expect(JSON.parse(body.get("ContentVariables")!)).toEqual({ "1": "123456" });
+    expect(body.get("Body")).toBeNull();
+  });
+
+  it("keeps SMS as plain text even when a WhatsApp template is configured", async () => {
+    const f = fakeFetch({ ok: true, body: { sid: "SM1" } });
+    await new TwilioProvider({ ...config, whatsappContentSid: "HX" + "a".repeat(32) }, f.impl).send({ channel: "sms", to: PHONE, code: "123456" });
+    const body = f.calls[0]!.init.body as URLSearchParams;
+    expect(body.get("ContentSid")).toBeNull();
+    expect(body.get("Body")).toContain("123456");
+  });
+
   it("places a call with spoken digits for the voice channel", async () => {
     const f = fakeFetch({ ok: true, body: { sid: "CA1" } });
     await new TwilioProvider(config, f.impl).send({ channel: "voice", to: PHONE, code: "123456" });

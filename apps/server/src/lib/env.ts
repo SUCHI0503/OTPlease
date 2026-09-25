@@ -70,6 +70,8 @@ const envSchema = z.object({
   TWILIO_SMS_FROM: z.string().optional(),
   TWILIO_WHATSAPP_FROM: z.string().optional(),
   TWILIO_VOICE_FROM: z.string().optional(),
+  // Approved WhatsApp template (Twilio Content SID, starts with HX). Needed for WhatsApp outside the sandbox chat window.
+  TWILIO_WHATSAPP_CONTENT_SID: z.string().regex(/^HX[0-9a-f]{32}$/i, "TWILIO_WHATSAPP_CONTENT_SID must look like HX followed by 32 hex characters").optional(),
   TWILIO_STATUS_CALLBACK_URL: z.string().url().optional(),
   // Optional SMTP (local: Mailpit). Without it, the email channel falls back to the mock provider.
   SMTP_HOST: z.string().optional(),

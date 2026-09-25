@@ -18,6 +18,7 @@ export function buildProviders(): ProviderRegistry {
           accountSid: env.TWILIO_ACCOUNT_SID,
           authToken: env.TWILIO_AUTH_TOKEN,
           from: { sms: env.TWILIO_SMS_FROM, whatsapp: env.TWILIO_WHATSAPP_FROM, voice: env.TWILIO_VOICE_FROM },
+          whatsappContentSid: env.TWILIO_WHATSAPP_CONTENT_SID,
           statusCallbackUrl: env.TWILIO_STATUS_CALLBACK_URL,
         })
       : mock;
